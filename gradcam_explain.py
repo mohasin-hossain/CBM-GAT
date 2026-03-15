@@ -131,13 +131,13 @@ def patch_importance_to_heatmap(patch_importance: torch.Tensor,
 
 
 # ---------------------------------------------------------------------------
-# Standalone Grad-CAM visualisation
+# Standalone Grad-CAM visualisations
 # ---------------------------------------------------------------------------
 
-def gradcam_standalone(dataset_key: str, image_path: str, device: str,
-                       backbone: str, target_class: Optional[int],
-                       alpha: float):
-    """Produce a 3-panel figure: original | heatmap | overlay."""
+def gradcam_standalone_spatial(dataset_key: str, image_path: str, device: str,
+                               backbone: str, target_class: Optional[int],
+                               alpha: float):
+    """Standalone spatial Grad-CAM using ImageNet ResNet-50."""
     model = load_resnet50(device)
     gradcam = GradCAM(model, target_layer=model.layer4)
 
@@ -152,7 +152,7 @@ def gradcam_standalone(dataset_key: str, image_path: str, device: str,
     axes[0].axis("off")
 
     axes[1].imshow(cam, cmap="jet")
-    axes[1].set_title("Grad-CAM Heatmap", fontsize=13)
+    axes[1].set_title("ResNet-50 Grad-CAM (ImageNet)", fontsize=13)
     axes[1].axis("off")
 
     axes[2].imshow(blended)
@@ -160,35 +160,99 @@ def gradcam_standalone(dataset_key: str, image_path: str, device: str,
     axes[2].axis("off")
 
     plt.tight_layout()
-    out_path = os.path.join(os.getcwd(), "output_gradcam.png")
+    out_path = os.path.join(os.getcwd(), "output_gradcam_spatial.png")
     plt.savefig(out_path, dpi=150, bbox_inches='tight', pad_inches=0.2)
     plt.close(fig)
-    print(f"[INFO] Grad-CAM figure saved to {out_path}")
-    print(f"Predicted class: {pred_cls} ({conf*100:.2f}%)")
+    print(f"[INFO] Spatial Grad-CAM figure saved to {out_path}")
+    print(f"ResNet-50 predicted class: {pred_cls} ({conf*100:.2f}%)")
+
+
+def gradcam_standalone_medical(dataset_key: str, image_path: str, device: str,
+                               backbone: str, alpha: float, output_root: str,
+                               patch_size: int, stride_r: float,
+                               top_k_max: int, min_concept_weight: float):
+    """Standalone CBM-GAT Grad-CAM (medical decision) – no concepts."""
+    from graph import load_split, infer_dims
+    from explain_image import (
+        load_craft, load_trained_gat, build_graph_from_single_image,
+    )
+
+    # Build CBM-GAT pipeline (same as in comparison)
+    train_ds = load_split(output_root, dataset_key, "train", device=device)
+    in_dim, num_classes = infer_dims(train_ds)
+
+    craft, _ = load_craft(dataset_key, device, output_root, backbone=backbone)
+    gat_model = load_trained_gat(dataset_key, device, output_root, in_dim, num_classes)
+
+    graph, patches_U, image_pil_cbm = build_graph_from_single_image(
+        dataset_key, image_path, device, craft, patch_size, stride_r)
+
+    node_f = graph.ndata["feat"].float().to(device).requires_grad_(True)
+    logits, _, _ = gat_model(graph, node_f)
+    probs = F.softmax(logits[0], dim=0)
+    pred_idx = int(torch.argmax(probs).item())
+    pred_conf = float(probs[pred_idx].item())
+
+    target_prob = probs[pred_idx]
+    grads = torch.autograd.grad(target_prob, node_f, create_graph=False)[0]
+    node_importance = grads.abs().sum(dim=1)
+    node_importance = node_importance / (node_importance.sum() + 1e-8)
+
+    U = torch.tensor(patches_U, device=node_importance.device, dtype=node_importance.dtype)
+    patch_importance = torch.matmul(U, node_importance)
+    patch_importance = patch_importance / (patch_importance.sum() + 1e-8)
+
+    stride = int(patch_size * stride_r)
+    num_patches_w = (image_pil_cbm.width - patch_size) // stride + 1
+    num_patches_h = (image_pil_cbm.height - patch_size) // stride + 1
+
+    medical_heatmap = patch_importance_to_heatmap(
+        patch_importance=patch_importance,
+        num_patches_h=num_patches_h,
+        num_patches_w=num_patches_w,
+        img_size=image_pil_cbm.width,
+    )
+    blended_medical = overlay_heatmap(image_pil_cbm, medical_heatmap, alpha)
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+    axes[0].imshow(np.array(image_pil_cbm))
+    axes[0].set_title("Original Image", fontsize=13)
+    axes[0].axis("off")
+
+    axes[1].imshow(medical_heatmap, cmap="jet")
+    axes[1].set_title("CBM-GAT Grad-CAM (medical)", fontsize=13)
+    axes[1].axis("off")
+
+    axes[2].imshow(blended_medical)
+    axes[2].set_title(f"Overlay  —  GAT class {pred_idx} ({pred_conf*100:.1f}%)", fontsize=13)
+    axes[2].axis("off")
+
+    plt.tight_layout()
+    out_path = os.path.join(os.getcwd(), "output_gradcam_medical.png")
+    plt.savefig(out_path, dpi=150, bbox_inches='tight', pad_inches=0.2)
+    plt.close(fig)
+    print(f"[INFO] Medical Grad-CAM figure saved to {out_path}")
+    print(f"GAT predicted class: {pred_idx} ({pred_conf*100:.2f}%)")
 
 
 # ---------------------------------------------------------------------------
-# Comparison mode: Grad-CAM  vs  CBM-GAT concepts  (side-by-side)
+# Comparison modes
 # ---------------------------------------------------------------------------
 
-def gradcam_vs_concepts(dataset_key: str, image_path: str, device: str,
-                        backbone: str, target_class: Optional[int],
-                        alpha: float, output_root: str,
-                        patch_size: int, stride_r: float,
-                        top_k_max: int, min_concept_weight: float):
+def _compute_cbm_concepts(dataset_key: str, image_path: str, device: str,
+                          backbone: str, output_root: str,
+                          patch_size: int, stride_r: float,
+                          top_k_max: int, min_concept_weight: float):
     """
-    Left half  : CBM-GAT spatial heatmap (medical decision) + prediction
-    Right half : CBM-GAT concept patches, importance bars, concept examples
+    Shared CBM-GAT pipeline returning everything needed for concept visualisation.
     """
-    from concepts import build_model_parts, load_craft_and_attach
-    from graph import ConceptGraphDataset, load_split, infer_dims
-    from model import EGATClassifier, GAT_LightningModule
+    from graph import load_split, infer_dims
     from explain_image import (
         load_craft, load_trained_gat, build_graph_from_single_image,
         argmax_safe,
     )
 
-    # ---- CBM-GAT side (mirrors explain_image.explain_image) ----
     train_ds = load_split(output_root, dataset_key, "train", device=device)
     in_dim, num_classes = infer_dims(train_ds)
 
@@ -232,6 +296,32 @@ def gradcam_vs_concepts(dataset_key: str, image_path: str, device: str,
     stride = int(patch_size * stride_r)
     num_patches_w = (image_pil_cbm.width - patch_size) // stride + 1
     num_patches_h = (image_pil_cbm.height - patch_size) // stride + 1
+
+    return (image_pil_cbm, craft_dir, gat_model,
+            node_importance, patch_importance, patches_U,
+            top_concepts, top_values, sorted_patch_idx, patches_C,
+            colors, stride, num_patches_w, num_patches_h,
+            pred_idx, pred_conf)
+
+
+def gradcam_vs_concepts_medical(dataset_key: str, image_path: str, device: str,
+                                backbone: str, alpha: float, output_root: str,
+                                patch_size: int, stride_r: float,
+                                top_k_max: int, min_concept_weight: float):
+    """
+    Left half  : CBM-GAT spatial heatmap (medical decision) + prediction
+    Right half : CBM-GAT concept patches, importance bars, concept examples
+    """
+    (image_pil_cbm, craft_dir, gat_model,
+     node_importance, patch_importance, patches_U,
+     top_concepts, top_values, sorted_patch_idx, patches_C,
+     colors, stride, num_patches_w, num_patches_h,
+     pred_idx, pred_conf) = _compute_cbm_concepts(
+        dataset_key, image_path, device, backbone, output_root,
+        patch_size, stride_r, top_k_max, min_concept_weight
+    )
+
+    top_k = len(top_concepts)
 
     # ---- CBM-GAT spatial heatmap (medical decision) ----
     medical_heatmap = patch_importance_to_heatmap(
@@ -340,10 +430,138 @@ def gradcam_vs_concepts(dataset_key: str, image_path: str, device: str,
             ax_c.text(0.5, 0.5, f"(no example for {concept_id})",
                       ha="center", va="center", fontsize=11)
 
-    out_path = os.path.join(os.getcwd(), "output_gradcam_vs_concepts.png")
+    out_path = os.path.join(os.getcwd(), "output_gradcam_vs_concepts_medical.png")
     plt.savefig(out_path, dpi=150, bbox_inches="tight", pad_inches=0.2)
     plt.close(fig)
     print(f"[INFO] Comparison figure saved to {out_path}")
+    print(f"CBM-GAT   -> class {pred_idx} ({pred_conf*100:.2f}%)")
+    print(f"Top concepts: {', '.join(str(c) for c in top_concepts)}")
+
+
+def gradcam_vs_concepts_spatial(dataset_key: str, image_path: str, device: str,
+                                backbone: str, target_class: Optional[int],
+                                alpha: float, output_root: str,
+                                patch_size: int, stride_r: float,
+                                top_k_max: int, min_concept_weight: float):
+    """
+    Left half  : ResNet-50 spatial Grad-CAM (ImageNet)
+    Right half : CBM-GAT concept patches, importance bars, concept examples
+    """
+    # Left: spatial Grad-CAM
+    model = load_resnet50(device)
+    gradcam = GradCAM(model, target_layer=model.layer4)
+    input_tensor, image_pil_gc = prepare_image(image_path, dataset_key, device)
+    cam, gc_cls, gc_conf = gradcam.generate(input_tensor, target_class)
+    blended_spatial = overlay_heatmap(image_pil_gc, cam, alpha)
+
+    # Right: CBM-GAT concepts (no medical heatmap)
+    (image_pil_cbm, craft_dir, gat_model,
+     node_importance, patch_importance, patches_U,
+     top_concepts, top_values, sorted_patch_idx, patches_C,
+     colors, stride, num_patches_w, num_patches_h,
+     pred_idx, pred_conf) = _compute_cbm_concepts(
+        dataset_key, image_path, device, backbone, output_root,
+        patch_size, stride_r, top_k_max, min_concept_weight
+    )
+
+    # Select one top patch per concept (same as medical variant)
+    selected_indices = []
+    patch_importance_np = patch_importance.detach().cpu().numpy()
+    num_patches, num_concepts_total = patches_U.shape
+    for concept_id in top_concepts:
+        if concept_id >= num_concepts_total:
+            continue
+        concept_activations = patches_U[:, concept_id]
+        scores = concept_activations * patch_importance_np
+        best_idx = int(np.argmax(scores))
+        selected_indices.append((concept_id, best_idx))
+    if not selected_indices:
+        selected_indices = [(top_concepts[0], idx) for idx in sorted_patch_idx[:top_k_max]]
+
+    draw = ImageDraw.Draw(image_pil_cbm)
+    for concept_id, idx in selected_indices:
+        row = idx // num_patches_w
+        col = idx % num_patches_w
+        x, y = col * stride, row * stride
+        c_index = top_concepts.index(concept_id) if concept_id in top_concepts else 0
+        outline_color = tuple((colors[c_index] * 255).astype(int))
+        draw.rectangle([x, y, x + patch_size, y + patch_size],
+                       outline=tuple(outline_color), width=3)
+
+    # Build figure: [spatial Grad-CAM | CBM-GAT patches | concept bars | examples]
+    fig = plt.figure(figsize=(32, 8), constrained_layout=True)
+    outer_gs = gridspec.GridSpec(1, 4, width_ratios=[1, 1, 1, 1])
+
+    # Panel 1 – spatial Grad-CAM
+    gc_gs = gridspec.GridSpecFromSubplotSpec(
+        2, 1, subplot_spec=outer_gs[0, 0], height_ratios=[30, 2], hspace=0.1)
+    ax_gc = fig.add_subplot(gc_gs[0, 0])
+    ax_gc.imshow(blended_spatial)
+    ax_gc.set_title("ResNet-50 Grad-CAM (ImageNet)", fontsize=13, fontweight="bold")
+    ax_gc.axis("off")
+    ax_gc_cap = fig.add_subplot(gc_gs[1, 0])
+    ax_gc_cap.axis("off")
+    ax_gc_cap.text(0.5, 0.5,
+                   f"ResNet-50 prediction: class {gc_cls} ({gc_conf*100:.1f}%)",
+                   ha="center", va="center", fontsize=11)
+
+    # Panel 2 – CBM-GAT concept patches
+    cbm_gs = gridspec.GridSpecFromSubplotSpec(
+        2, 1, subplot_spec=outer_gs[0, 1], height_ratios=[30, 2], hspace=0.1)
+    ax_cbm = fig.add_subplot(cbm_gs[0, 0])
+    ax_cbm.imshow(np.array(image_pil_cbm))
+    ax_cbm.set_title("CBM-GAT (concept patches)", fontsize=13, fontweight="bold")
+    ax_cbm.axis("off")
+    ax_cbm_cap = fig.add_subplot(cbm_gs[1, 0])
+    ax_cbm_cap.axis("off")
+    ax_cbm_cap.text(0.5, 0.5,
+                    f"GAT prediction: class {pred_idx} ({pred_conf*100:.1f}%)",
+                    ha="center", va="center", fontsize=11)
+
+    # Panel 3 – concept importance bars
+    ax_bar = fig.add_subplot(outer_gs[0, 2])
+    top_k = len(top_concepts)
+    y_pos = np.arange(top_k)
+    bars = ax_bar.barh(y_pos, top_values, color=colors[:top_k], align="center")
+    ax_bar.set_yticks(y_pos)
+    ax_bar.set_yticklabels([f"Concept {c}" for c in top_concepts])
+    ax_bar.invert_yaxis()
+    ax_bar.set_xlabel("Importance")
+    ax_bar.set_title(f"Top {top_k} Concept IDs", fontsize=13, fontweight="bold")
+    if top_k:
+        ax_bar.set_xlim(0, max(top_values) * 1.3)
+        for i, b in enumerate(bars):
+            ax_bar.text(b.get_width() + max(top_values) * 0.01,
+                        b.get_y() + b.get_height() / 2,
+                        f"{top_values[i]:.3f}", va="center", fontsize=10)
+
+    # Panel 4 – concept example thumbnails
+    right_gs = gridspec.GridSpecFromSubplotSpec(
+        top_k, 2, subplot_spec=outer_gs[0, 3],
+        width_ratios=[0.3, 1.0], wspace=0.0, hspace=0.4)
+    for i in range(top_k):
+        concept_id = top_concepts[i]
+        c_color = colors[i]
+        fig.add_subplot(right_gs[i, 0]).axis("off")
+        ax_c = fig.add_subplot(right_gs[i, 1])
+        ax_c.axis("off")
+        thumb = os.path.join(craft_dir, "concept_examples", f"concept_{concept_id}.png")
+        if os.path.isfile(thumb):
+            im = Image.open(thumb).convert("RGB")
+            ax_c.imshow(im)
+            border = mpatches.Rectangle(
+                (0, 0), 1, 1, transform=ax_c.transAxes,
+                linewidth=8, edgecolor=c_color, facecolor="none")
+            ax_c.add_patch(border)
+        else:
+            ax_c.text(0.5, 0.5, f"(no example for {concept_id})",
+                      ha="center", va="center", fontsize=11)
+
+    out_path = os.path.join(os.getcwd(), "output_gradcam_vs_concepts_spatial.png")
+    plt.savefig(out_path, dpi=150, bbox_inches="tight", pad_inches=0.2)
+    plt.close(fig)
+    print(f"[INFO] Spatial comparison figure saved to {out_path}")
+    print(f"ResNet-50 -> class {gc_cls} ({gc_conf*100:.2f}%)")
     print(f"CBM-GAT   -> class {pred_idx} ({pred_conf*100:.2f}%)")
     print(f"Top concepts: {', '.join(str(c) for c in top_concepts)}")
 
@@ -364,6 +582,18 @@ def main():
     ap.add_argument("--alpha", type=float, default=0.5,
                     help="Heatmap overlay transparency (0=image only, 1=heatmap only)")
 
+    ap.add_argument(
+        "--mode",
+        choices=[
+            "standalone_spatial",
+            "standalone_medical",
+            "compare_spatial_concepts",
+            "compare_medical_concepts",
+        ],
+        help="Visualization mode. If omitted, falls back to --compare flag for backward compatibility.",
+        default=None,
+    )
+
     cmp = ap.add_argument_group("comparison mode (requires trained CBM-GAT)")
     cmp.add_argument("--compare", action="store_true",
                      help="Also run CBM-GAT and produce side-by-side figure")
@@ -376,8 +606,39 @@ def main():
 
     args = ap.parse_args()
 
-    if args.compare:
-        gradcam_vs_concepts(
+    # Backward compatibility: if --mode not given, infer from --compare
+    if args.mode is None:
+        if args.compare:
+            mode = "compare_medical_concepts"
+        else:
+            mode = "standalone_spatial"
+    else:
+        mode = args.mode
+
+    if mode == "standalone_spatial":
+        gradcam_standalone_spatial(
+            dataset_key=args.dataset,
+            image_path=args.image_path,
+            device=args.device,
+            backbone=args.backbone,
+            target_class=args.target_class,
+            alpha=args.alpha,
+        )
+    elif mode == "standalone_medical":
+        gradcam_standalone_medical(
+            dataset_key=args.dataset,
+            image_path=args.image_path,
+            device=args.device,
+            backbone=args.backbone,
+            alpha=args.alpha,
+            output_root=args.file_root,
+            patch_size=args.patch_size,
+            stride_r=args.stride_r,
+            top_k_max=args.top_k_max,
+            min_concept_weight=args.min_concept_weight,
+        )
+    elif mode == "compare_spatial_concepts":
+        gradcam_vs_concepts_spatial(
             dataset_key=args.dataset,
             image_path=args.image_path,
             device=args.device,
@@ -390,15 +651,21 @@ def main():
             top_k_max=args.top_k_max,
             min_concept_weight=args.min_concept_weight,
         )
-    else:
-        gradcam_standalone(
+    elif mode == "compare_medical_concepts":
+        gradcam_vs_concepts_medical(
             dataset_key=args.dataset,
             image_path=args.image_path,
             device=args.device,
             backbone=args.backbone,
-            target_class=args.target_class,
             alpha=args.alpha,
+            output_root=args.file_root,
+            patch_size=args.patch_size,
+            stride_r=args.stride_r,
+            top_k_max=args.top_k_max,
+            min_concept_weight=args.min_concept_weight,
         )
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
 
 
 if __name__ == "__main__":
