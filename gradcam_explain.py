@@ -83,6 +83,21 @@ def load_resnet50(device: str = "cuda") -> models.ResNet:
     return model
 
 
+def load_resnet50_finetuned(ckpt_path: str,
+                            device: str = "cuda") -> models.ResNet:
+    """Load a fine-tuned ResNet-50 saved by train_cnn.py.
+
+    The checkpoint is a dict with keys ``state_dict`` and ``num_classes``,
+    so no external ``num_classes`` argument is needed.
+    """
+    ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
+    num_classes = ckpt["num_classes"]
+    model = models.resnet50(weights=None)
+    model.fc = torch.nn.Linear(model.fc.in_features, num_classes)
+    model.load_state_dict(ckpt["state_dict"])
+    return model.to(device).eval()
+
+
 def prepare_image(image_path: str, dataset_key: str, device: str):
     """
     Returns:
@@ -137,7 +152,7 @@ def patch_importance_to_heatmap(patch_importance: torch.Tensor,
 def gradcam_standalone_spatial(dataset_key: str, image_path: str, device: str,
                                backbone: str, target_class: Optional[int],
                                alpha: float):
-    """Standalone spatial Grad-CAM using ImageNet ResNet-50."""
+    """Standalone spatial Grad-CAM using ImageNet-pretrained ResNet-50."""
     model = load_resnet50(device)
     gradcam = GradCAM(model, target_layer=model.layer4)
 
@@ -234,6 +249,49 @@ def gradcam_standalone_medical(dataset_key: str, image_path: str, device: str,
     plt.close(fig)
     print(f"[INFO] Medical Grad-CAM figure saved to {out_path}")
     print(f"GAT predicted class: {pred_idx} ({pred_conf*100:.2f}%)")
+
+
+def gradcam_standalone_cnn(dataset_key: str, image_path: str, device: str,
+                           backbone: str, target_class: Optional[int],
+                           alpha: float, output_root: str):
+    """Standalone Grad-CAM using the fine-tuned CNN baseline (auto-loads checkpoint)."""
+    ckpt_path = os.path.join(
+        output_root, dataset_key, "models_cnn", dataset_key,
+        f"{dataset_key}_resnet50_cnn.pt",
+    )
+    if not os.path.isfile(ckpt_path):
+        raise FileNotFoundError(
+            f"CNN baseline checkpoint not found at {ckpt_path}. "
+            "Run train_cnn.py first."
+        )
+
+    model = load_resnet50_finetuned(ckpt_path, device)
+    gradcam = GradCAM(model, target_layer=model.layer4)
+
+    input_tensor, image_pil = prepare_image(image_path, dataset_key, device)
+    cam, pred_cls, conf = gradcam.generate(input_tensor, target_class)
+    blended = overlay_heatmap(image_pil, cam, alpha)
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+    axes[0].imshow(np.array(image_pil))
+    axes[0].set_title("Original Image", fontsize=13)
+    axes[0].axis("off")
+
+    axes[1].imshow(cam, cmap="jet")
+    axes[1].set_title("ResNet-50 Grad-CAM (fine-tuned)", fontsize=13)
+    axes[1].axis("off")
+
+    axes[2].imshow(blended)
+    axes[2].set_title(f"Overlay  —  class {pred_cls} ({conf*100:.1f}%)", fontsize=13)
+    axes[2].axis("off")
+
+    plt.tight_layout()
+    out_path = os.path.join(os.getcwd(), "output_gradcam_cnn.png")
+    plt.savefig(out_path, dpi=150, bbox_inches='tight', pad_inches=0.2)
+    plt.close(fig)
+    print(f"[INFO] CNN baseline Grad-CAM figure saved to {out_path}")
+    print(f"Fine-tuned ResNet-50 predicted class: {pred_cls} ({conf*100:.2f}%)")
 
 
 # ---------------------------------------------------------------------------
@@ -491,10 +549,10 @@ def gradcam_vs_concepts_spatial(dataset_key: str, image_path: str, device: str,
                                 patch_size: int, stride_r: float,
                                 top_k_max: int, min_concept_weight: float):
     """
-    Left half  : ResNet-50 spatial Grad-CAM (ImageNet)
+    Left half  : ImageNet-pretrained ResNet-50 spatial Grad-CAM
     Right half : CBM-GAT concept patches, importance bars, concept examples
     """
-    # Left: spatial Grad-CAM
+    # Left: spatial Grad-CAM (ImageNet)
     model = load_resnet50(device)
     gradcam = GradCAM(model, target_layer=model.layer4)
     input_tensor, image_pil_gc = prepare_image(image_path, dataset_key, device)
@@ -660,6 +718,187 @@ def gradcam_vs_concepts_spatial(dataset_key: str, image_path: str, device: str,
     print(f"Top concepts: {', '.join(str(c) for c in top_concepts)}")
 
 
+def gradcam_vs_concepts_cnn(dataset_key: str, image_path: str, device: str,
+                            backbone: str, target_class: Optional[int],
+                            alpha: float, output_root: str,
+                            patch_size: int, stride_r: float,
+                            top_k_max: int, min_concept_weight: float):
+    """
+    Left half  : Fine-tuned ResNet-50 Grad-CAM (CNN baseline, auto-loaded)
+    Right half : CBM-GAT concept patches, importance bars, concept examples
+    """
+    # Left: fine-tuned CNN Grad-CAM
+    ckpt_path = os.path.join(
+        output_root, dataset_key, "models_cnn", dataset_key,
+        f"{dataset_key}_resnet50_cnn.pt",
+    )
+    if not os.path.isfile(ckpt_path):
+        raise FileNotFoundError(
+            f"CNN baseline checkpoint not found at {ckpt_path}. "
+            "Run train_cnn.py first."
+        )
+
+    model = load_resnet50_finetuned(ckpt_path, device)
+    gradcam = GradCAM(model, target_layer=model.layer4)
+    input_tensor, image_pil_gc = prepare_image(image_path, dataset_key, device)
+    cam, gc_cls, gc_conf = gradcam.generate(input_tensor, target_class)
+    blended_cnn = overlay_heatmap(image_pil_gc, cam, alpha)
+
+    # Right: CBM-GAT concepts
+    (image_pil_cbm, craft_dir, gat_model,
+     node_importance, patch_importance, patches_U,
+     top_concepts, top_values, sorted_patch_idx, patches_C,
+     colors, stride, num_patches_w, num_patches_h,
+     pred_idx, pred_conf) = _compute_cbm_concepts(
+        dataset_key, image_path, device, backbone, output_root,
+        patch_size, stride_r, top_k_max, min_concept_weight
+    )
+
+    # Select one top patch per concept
+    selected_indices = []
+    patch_importance_np = patch_importance.detach().cpu().numpy()
+    num_patches, num_concepts_total = patches_U.shape
+    for concept_id in top_concepts:
+        if concept_id >= num_concepts_total:
+            continue
+        concept_activations = patches_U[:, concept_id]
+        scores = concept_activations * patch_importance_np
+        best_idx = int(np.argmax(scores))
+        selected_indices.append((concept_id, best_idx))
+    if not selected_indices:
+        selected_indices = [(top_concepts[0], idx) for idx in sorted_patch_idx[:top_k_max]]
+
+    draw = ImageDraw.Draw(image_pil_cbm)
+    for concept_id, idx in selected_indices:
+        row = idx // num_patches_w
+        col = idx % num_patches_w
+        x, y = col * stride, row * stride
+        c_index = top_concepts.index(concept_id) if concept_id in top_concepts else 0
+        outline_color = tuple((colors[c_index] * 255).astype(int))
+        draw.rectangle([x, y, x + patch_size, y + patch_size],
+                       outline=tuple(outline_color), width=3)
+
+    # Build figure: [CNN Grad-CAM | CBM-GAT patches | concept bars | examples]
+    fig = plt.figure(figsize=(32, 8), constrained_layout=True)
+    outer_gs = gridspec.GridSpec(1, 4, width_ratios=[1, 1, 1, 1])
+
+    strips_title_ax = fig.add_subplot(outer_gs[0, 3])
+    strips_title_ax.axis("off")
+    strips_title_ax.text(
+        0.5, 1.0,
+        "Top 3 Concept Image Patches",
+        ha="center", va="bottom",
+        fontsize=13, fontweight="bold",
+        transform=strips_title_ax.transAxes,
+    )
+
+    # Panel 1 – fine-tuned CNN Grad-CAM
+    gc_gs = gridspec.GridSpecFromSubplotSpec(
+        2, 1, subplot_spec=outer_gs[0, 0], height_ratios=[30, 2], hspace=0.1)
+    ax_gc = fig.add_subplot(gc_gs[0, 0])
+    ax_gc.imshow(blended_cnn)
+    ax_gc.set_title("ResNet-50 Grad-CAM (fine-tuned)", fontsize=13, fontweight="bold")
+    ax_gc.axis("off")
+    ax_gc_cap = fig.add_subplot(gc_gs[1, 0])
+    ax_gc_cap.axis("off")
+    ax_gc_cap.text(
+        0.5, 0.5,
+        f"CNN prediction: class {gc_cls} ({gc_conf*100:.1f}%)",
+        ha="center", va="center",
+        fontsize=12,
+        fontweight="bold",
+    )
+
+    # Panel 2 – CBM-GAT concept patches
+    cbm_gs = gridspec.GridSpecFromSubplotSpec(
+        2, 1, subplot_spec=outer_gs[0, 1], height_ratios=[30, 2], hspace=0.1)
+    ax_cbm = fig.add_subplot(cbm_gs[0, 0])
+    ax_cbm.imshow(np.array(image_pil_cbm))
+    ax_cbm.set_title("CBM-GAT (concept patches)", fontsize=13, fontweight="bold")
+    ax_cbm.axis("off")
+    ax_cbm_cap = fig.add_subplot(cbm_gs[1, 0])
+    ax_cbm_cap.axis("off")
+    ax_cbm_cap.text(
+        0.5, 0.5,
+        f"GAT prediction: class {pred_idx} ({pred_conf*100:.1f}%)",
+        ha="center", va="center",
+        fontsize=12,
+        fontweight="bold",
+    )
+
+    # Panel 3 – concept importance bars
+    bar_gs = gridspec.GridSpecFromSubplotSpec(
+        2, 1, subplot_spec=outer_gs[0, 2], height_ratios=[30, 2], hspace=0.1
+    )
+    ax_bar = fig.add_subplot(bar_gs[0, 0])
+    top_k = len(top_concepts)
+    y_pos = np.arange(top_k)
+    bars = ax_bar.barh(y_pos, top_values, color=colors[:top_k], align="center")
+    ax_bar.set_yticks(y_pos)
+    ax_bar.set_yticklabels([f"Concept {c}" for c in top_concepts])
+    ax_bar.invert_yaxis()
+    ax_bar.set_xlabel("Importance", fontsize=12)
+    ax_bar.xaxis.labelpad = 14
+    ax_bar.set_title(f"Top {top_k} Concept Activations", fontsize=13, fontweight="bold")
+    if top_k:
+        ax_bar.set_xlim(0, max(top_values) * 1.3)
+        for i, b in enumerate(bars):
+            ax_bar.text(b.get_width() + max(top_values) * 0.01,
+                        b.get_y() + b.get_height() / 2,
+                        f"{top_values[i]:.3f}", va="center", fontsize=10)
+
+    ax_bar_cap = fig.add_subplot(bar_gs[1, 0])
+    ax_bar_cap.axis("off")
+
+    # Panel 4 – concept example thumbnails
+    right_gs = gridspec.GridSpecFromSubplotSpec(
+        top_k, 2, subplot_spec=outer_gs[0, 3],
+        width_ratios=[0.1, 1.0], wspace=0.0, hspace=0.10)
+    for i in range(top_k):
+        concept_id = top_concepts[i]
+        c_color = colors[i]
+
+        ax_c = fig.add_subplot(right_gs[i, 1])
+        ax_c.axis("off")
+        thumb = os.path.join(craft_dir, "concept_examples", f"concept_{concept_id}.png")
+        if os.path.isfile(thumb):
+            im = Image.open(thumb).convert("RGB")
+            ax_c.imshow(im)
+            border = mpatches.Rectangle(
+                (0, 0), 1, 1, transform=ax_c.transAxes,
+                linewidth=8, edgecolor=c_color, facecolor="none")
+            ax_c.add_patch(border)
+        else:
+            ax_c.text(0.5, 0.5, f"(no example for {concept_id})",
+                      ha="center", va="center", fontsize=11)
+
+        ax_c.text(
+            0.5, 1.07,
+            f"Concept {concept_id}",
+            ha="center", va="bottom",
+            fontsize=12,
+            fontweight="bold",
+            color=c_color,
+            transform=ax_c.transAxes,
+        )
+
+        ax_c.text(
+            0.5, -0.05,
+            f"Importance: {top_values[i]*100:.1f}%",
+            ha="center", va="top",
+            fontsize=10,
+            transform=ax_c.transAxes,
+        )
+
+    out_path = os.path.join(os.getcwd(), "output_gradcam_vs_concepts_cnn.png")
+    plt.savefig(out_path, dpi=150, bbox_inches="tight", pad_inches=0.2)
+    plt.close(fig)
+    print(f"[INFO] CNN vs concepts comparison figure saved to {out_path}")
+    print(f"Fine-tuned CNN -> class {gc_cls} ({gc_conf*100:.2f}%)")
+    print(f"CBM-GAT        -> class {pred_idx} ({pred_conf*100:.2f}%)")
+    print(f"Top concepts: {', '.join(str(c) for c in top_concepts)}")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -680,8 +919,10 @@ def main():
         "--mode",
         choices=[
             "standalone_spatial",
+            "standalone_cnn",
             "standalone_medical",
             "compare_spatial_concepts",
+            "compare_cnn_concepts",
             "compare_medical_concepts",
         ],
         help="Visualization mode. If omitted, falls back to --compare flag for backward compatibility.",
@@ -718,6 +959,16 @@ def main():
             target_class=args.target_class,
             alpha=args.alpha,
         )
+    elif mode == "standalone_cnn":
+        gradcam_standalone_cnn(
+            dataset_key=args.dataset,
+            image_path=args.image_path,
+            device=args.device,
+            backbone=args.backbone,
+            target_class=args.target_class,
+            alpha=args.alpha,
+            output_root=args.file_root,
+        )
     elif mode == "standalone_medical":
         gradcam_standalone_medical(
             dataset_key=args.dataset,
@@ -733,6 +984,20 @@ def main():
         )
     elif mode == "compare_spatial_concepts":
         gradcam_vs_concepts_spatial(
+            dataset_key=args.dataset,
+            image_path=args.image_path,
+            device=args.device,
+            backbone=args.backbone,
+            target_class=args.target_class,
+            alpha=args.alpha,
+            output_root=args.file_root,
+            patch_size=args.patch_size,
+            stride_r=args.stride_r,
+            top_k_max=args.top_k_max,
+            min_concept_weight=args.min_concept_weight,
+        )
+    elif mode == "compare_cnn_concepts":
+        gradcam_vs_concepts_cnn(
             dataset_key=args.dataset,
             image_path=args.image_path,
             device=args.device,
