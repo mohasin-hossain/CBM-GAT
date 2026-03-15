@@ -12,3 +12,5 @@ torchmetrics==1.6.1
 torch-geometric==2.6.1
 dgl==2.4.0+cu118
 Craft-xai==0.0.3
+dill
+tensorflow==2.15.*

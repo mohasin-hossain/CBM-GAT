@@ -59,12 +59,13 @@ def _ph2_build_transforms():
     return _shared_medical_data_transforms()
 
 def _ph2_resolve_paths():
+    base = "/ds-iml/cbm-gat"
     return {
-        "images_root": os.path.join(default_datasets_dir, "ph2dataset/trainx"),
-        "nmf_csv":   os.path.join(default_datasets_dir, "ph2dataset/PH2_all_balanced.csv"),
+        "images_root": os.path.join(base, "PH2Dataset/trainx"),
+        "nmf_csv": os.path.join(default_datasets_dir, "ph2dataset/PH2_all_balanced.csv"),
         "train_csv": os.path.join(default_datasets_dir, "ph2dataset/PH2_train_balanced.csv"),
-        "val_csv":   os.path.join(default_datasets_dir, "ph2dataset/PH2_validation.csv"),
-        "test_csv":  os.path.join(default_datasets_dir, "ph2dataset/PH2_test.csv"),
+        "val_csv": os.path.join(default_datasets_dir, "ph2dataset/PH2_validation.csv"),
+        "test_csv": os.path.join(default_datasets_dir, "ph2dataset/PH2_test.csv"),
     }
 
 def _ph2_load_split(paths, tdict, split):
@@ -84,8 +85,9 @@ def _ham_build_transforms():
     return _shared_medical_data_transforms()
 
 def _ham_resolve_paths():
+    base = "/ds-iml/cbm-gat"
     return {
-        "images_root": os.path.join(default_datasets_dir, "ham10000/"),
+        "images_root": os.path.join(base, "ham10000"),
         "nmf_csv":   os.path.join(default_datasets_dir, "ham10000/all_balanced.csv"),
         "train_csv": os.path.join(default_datasets_dir, "ham10000/train_balanced.csv"),
         "val_csv":   os.path.join(default_datasets_dir, "ham10000/validation.csv"),
@@ -109,8 +111,9 @@ def _derm7pt_build_transforms():
     return _shared_medical_data_transforms()
 
 def _derm7pt_resolve_paths():
+    base = "/ds-iml/cbm-gat"
     return {
-        "images_root": os.path.join(default_datasets_dir, "derm7pt/images"),
+        "images_root": os.path.join(base, "derm7pt/images"),
         "nmf_csv":   os.path.join(default_datasets_dir, "derm7pt/derm7pt_all_balanced.csv"),
         "train_csv": os.path.join(default_datasets_dir, "derm7pt/derm7pt_train_balanced.csv"),
         "val_csv":   os.path.join(default_datasets_dir, "derm7pt/derm7pt_validation.csv"),
@@ -148,8 +151,9 @@ def _imagenet_build_transforms():
     return {"nmf": ev, "train": train, "eval": ev}
 
 def _imagenet_resolve_paths():
+    base = "/ds-iml/cbm-gat"
     return {
-        "images_root": os.path.join(default_datasets_dir, "imagenet"),
+        "images_root": os.path.join(base, "imagenet"),
         "nmf_csv":   os.path.join(default_datasets_dir, "imagenet/nmf.csv"),
         "train_csv": os.path.join(default_datasets_dir, "imagenet/train.csv"),
         "val_csv":   os.path.join(default_datasets_dir, "imagenet/val.csv"),

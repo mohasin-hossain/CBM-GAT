@@ -72,7 +72,7 @@ pip install -r requirements.txt
 
 #### Reproducibility of the results
 Download the required datasets:
-- PH2: https://www.fc.up.pt/addi/ph2%20database.html
+- PH2: https://www.kaggle.com/datasets/spacesurfer/ph2-dataset
 - Derm7pt: https://derm.cs.sfu.ca/Welcome.html
 - HAM10000: https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/DBW86T
 - ImageNet subset: `wget https://image-net.org/data/winter21_whole/<wnid>.tar` (use `n04065272` for recreational vehicle, `n02701002` for ambulance)
