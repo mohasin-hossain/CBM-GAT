@@ -366,6 +366,17 @@ def gradcam_vs_concepts_medical(dataset_key: str, image_path: str, device: str,
     fig = plt.figure(figsize=(32, 8), constrained_layout=True)
     outer_gs = gridspec.GridSpec(1, 4, width_ratios=[1, 1, 1, 1])
 
+    # Title for rightmost column (training patches for top concepts)
+    strips_title_ax = fig.add_subplot(outer_gs[0, 3])
+    strips_title_ax.axis("off")
+    strips_title_ax.text(
+        0.5, 1.0,
+        "Top 3 Concept Image Patches",
+        ha="center", va="bottom",
+        fontsize=13, fontweight="bold",
+        transform=strips_title_ax.transAxes,
+    )
+
     # Panel 1 – CBM-GAT spatial heatmap (medical decision)
     gc_gs = gridspec.GridSpecFromSubplotSpec(
         2, 1, subplot_spec=outer_gs[0, 0], height_ratios=[30, 2], hspace=0.1)
@@ -375,9 +386,13 @@ def gradcam_vs_concepts_medical(dataset_key: str, image_path: str, device: str,
     ax_gc.axis("off")
     ax_gc_cap = fig.add_subplot(gc_gs[1, 0])
     ax_gc_cap.axis("off")
-    ax_gc_cap.text(0.5, 0.5,
-                   f"GAT prediction: class {pred_idx} ({pred_conf*100:.1f}%)",
-                   ha="center", va="center", fontsize=11)
+    ax_gc_cap.text(
+        0.5, 0.5,
+        f"GAT prediction: class {pred_idx} ({pred_conf*100:.1f}%)",
+        ha="center", va="center",
+        fontsize=12,
+        fontweight="bold",
+    )
 
     # Panel 2 – CBM-GAT concept patches on image
     cbm_gs = gridspec.GridSpecFromSubplotSpec(
@@ -388,19 +403,27 @@ def gradcam_vs_concepts_medical(dataset_key: str, image_path: str, device: str,
     ax_cbm.axis("off")
     ax_cbm_cap = fig.add_subplot(cbm_gs[1, 0])
     ax_cbm_cap.axis("off")
-    ax_cbm_cap.text(0.5, 0.5,
-                    f"GAT prediction: class {pred_idx} ({pred_conf*100:.1f}%)",
-                    ha="center", va="center", fontsize=11)
+    ax_cbm_cap.text(
+        0.5, 0.5,
+        f"GAT prediction: class {pred_idx} ({pred_conf*100:.1f}%)",
+        ha="center", va="center",
+        fontsize=12,
+        fontweight="bold",
+    )
 
-    # Panel 3 – concept importance bars
-    ax_bar = fig.add_subplot(outer_gs[0, 2])
+    # Panel 3 – concept importance bars (aligned vertically with other panels)
+    bar_gs = gridspec.GridSpecFromSubplotSpec(
+        2, 1, subplot_spec=outer_gs[0, 2], height_ratios=[30, 2], hspace=0.1
+    )
+    ax_bar = fig.add_subplot(bar_gs[0, 0])
     y_pos = np.arange(top_k)
     bars = ax_bar.barh(y_pos, top_values, color=colors[:top_k], align="center")
     ax_bar.set_yticks(y_pos)
     ax_bar.set_yticklabels([f"Concept {c}" for c in top_concepts])
     ax_bar.invert_yaxis()
-    ax_bar.set_xlabel("Importance")
-    ax_bar.set_title(f"Top {top_k} Concept IDs", fontsize=13, fontweight="bold")
+    ax_bar.set_xlabel("Importance", fontsize=12)
+    ax_bar.xaxis.labelpad = 14
+    ax_bar.set_title(f"Top {top_k} Concept Activations", fontsize=13, fontweight="bold")
     if top_k:
         ax_bar.set_xlim(0, max(top_values) * 1.3)
         for i, b in enumerate(bars):
@@ -408,14 +431,18 @@ def gradcam_vs_concepts_medical(dataset_key: str, image_path: str, device: str,
                         b.get_y() + b.get_height() / 2,
                         f"{top_values[i]:.3f}", va="center", fontsize=10)
 
+    # small caption axis for alignment (can remain empty)
+    ax_bar_cap = fig.add_subplot(bar_gs[1, 0])
+    ax_bar_cap.axis("off")
+
     # Panel 4 – concept example thumbnails
     right_gs = gridspec.GridSpecFromSubplotSpec(
         top_k, 2, subplot_spec=outer_gs[0, 3],
-        width_ratios=[0.3, 1.0], wspace=0.0, hspace=0.4)
+        width_ratios=[0.1, 1.0], wspace=0.0, hspace=0.10)
     for i in range(top_k):
         concept_id = top_concepts[i]
         c_color = colors[i]
-        fig.add_subplot(right_gs[i, 0]).axis("off")
+        # right: example strip with concept label and importance text
         ax_c = fig.add_subplot(right_gs[i, 1])
         ax_c.axis("off")
         thumb = os.path.join(craft_dir, "concept_examples", f"concept_{concept_id}.png")
@@ -429,6 +456,26 @@ def gradcam_vs_concepts_medical(dataset_key: str, image_path: str, device: str,
         else:
             ax_c.text(0.5, 0.5, f"(no example for {concept_id})",
                       ha="center", va="center", fontsize=11)
+
+        # concept label above the strip
+        ax_c.text(
+            0.5, 1.07,
+            f"Concept {concept_id}",
+            ha="center", va="bottom",
+            fontsize=12,
+            fontweight="bold",
+            color=c_color,
+            transform=ax_c.transAxes,
+        )
+
+        # importance percentage below the strip
+        ax_c.text(
+            0.5, -0.05,
+            f"Importance: {top_values[i]*100:.1f}%",
+            ha="center", va="top",
+            fontsize=10,
+            transform=ax_c.transAxes,
+        )
 
     out_path = os.path.join(os.getcwd(), "output_gradcam_vs_concepts_medical.png")
     plt.savefig(out_path, dpi=150, bbox_inches="tight", pad_inches=0.2)
@@ -492,6 +539,17 @@ def gradcam_vs_concepts_spatial(dataset_key: str, image_path: str, device: str,
     fig = plt.figure(figsize=(32, 8), constrained_layout=True)
     outer_gs = gridspec.GridSpec(1, 4, width_ratios=[1, 1, 1, 1])
 
+    # Title for rightmost column (training patches for top concepts)
+    strips_title_ax = fig.add_subplot(outer_gs[0, 3])
+    strips_title_ax.axis("off")
+    strips_title_ax.text(
+        0.5, 1.0,
+        "Top 3 Concept Image Patches",
+        ha="center", va="bottom",
+        fontsize=13, fontweight="bold",
+        transform=strips_title_ax.transAxes,
+    )
+
     # Panel 1 – spatial Grad-CAM
     gc_gs = gridspec.GridSpecFromSubplotSpec(
         2, 1, subplot_spec=outer_gs[0, 0], height_ratios=[30, 2], hspace=0.1)
@@ -501,9 +559,13 @@ def gradcam_vs_concepts_spatial(dataset_key: str, image_path: str, device: str,
     ax_gc.axis("off")
     ax_gc_cap = fig.add_subplot(gc_gs[1, 0])
     ax_gc_cap.axis("off")
-    ax_gc_cap.text(0.5, 0.5,
-                   f"ResNet-50 prediction: class {gc_cls} ({gc_conf*100:.1f}%)",
-                   ha="center", va="center", fontsize=11)
+    ax_gc_cap.text(
+        0.5, 0.5,
+        f"ResNet-50 prediction: class {gc_cls} ({gc_conf*100:.1f}%)",
+        ha="center", va="center",
+        fontsize=12,
+        fontweight="bold",
+    )
 
     # Panel 2 – CBM-GAT concept patches
     cbm_gs = gridspec.GridSpecFromSubplotSpec(
@@ -514,20 +576,28 @@ def gradcam_vs_concepts_spatial(dataset_key: str, image_path: str, device: str,
     ax_cbm.axis("off")
     ax_cbm_cap = fig.add_subplot(cbm_gs[1, 0])
     ax_cbm_cap.axis("off")
-    ax_cbm_cap.text(0.5, 0.5,
-                    f"GAT prediction: class {pred_idx} ({pred_conf*100:.1f}%)",
-                    ha="center", va="center", fontsize=11)
+    ax_cbm_cap.text(
+        0.5, 0.5,
+        f"GAT prediction: class {pred_idx} ({pred_conf*100:.1f}%)",
+        ha="center", va="center",
+        fontsize=12,
+        fontweight="bold",
+    )
 
-    # Panel 3 – concept importance bars
-    ax_bar = fig.add_subplot(outer_gs[0, 2])
+    # Panel 3 – concept importance bars (aligned vertically with other panels)
+    bar_gs = gridspec.GridSpecFromSubplotSpec(
+        2, 1, subplot_spec=outer_gs[0, 2], height_ratios=[30, 2], hspace=0.1
+    )
+    ax_bar = fig.add_subplot(bar_gs[0, 0])
     top_k = len(top_concepts)
     y_pos = np.arange(top_k)
     bars = ax_bar.barh(y_pos, top_values, color=colors[:top_k], align="center")
     ax_bar.set_yticks(y_pos)
     ax_bar.set_yticklabels([f"Concept {c}" for c in top_concepts])
     ax_bar.invert_yaxis()
-    ax_bar.set_xlabel("Importance")
-    ax_bar.set_title(f"Top {top_k} Concept IDs", fontsize=13, fontweight="bold")
+    ax_bar.set_xlabel("Importance", fontsize=12)
+    ax_bar.xaxis.labelpad = 14
+    ax_bar.set_title(f"Top {top_k} Concept Activations", fontsize=13, fontweight="bold")
     if top_k:
         ax_bar.set_xlim(0, max(top_values) * 1.3)
         for i, b in enumerate(bars):
@@ -535,14 +605,18 @@ def gradcam_vs_concepts_spatial(dataset_key: str, image_path: str, device: str,
                         b.get_y() + b.get_height() / 2,
                         f"{top_values[i]:.3f}", va="center", fontsize=10)
 
+    # small caption axis for alignment (can remain empty)
+    ax_bar_cap = fig.add_subplot(bar_gs[1, 0])
+    ax_bar_cap.axis("off")
+
     # Panel 4 – concept example thumbnails
     right_gs = gridspec.GridSpecFromSubplotSpec(
         top_k, 2, subplot_spec=outer_gs[0, 3],
-        width_ratios=[0.3, 1.0], wspace=0.0, hspace=0.4)
+        width_ratios=[0.1, 1.0], wspace=0.0, hspace=0.10)
     for i in range(top_k):
         concept_id = top_concepts[i]
         c_color = colors[i]
-        fig.add_subplot(right_gs[i, 0]).axis("off")
+
         ax_c = fig.add_subplot(right_gs[i, 1])
         ax_c.axis("off")
         thumb = os.path.join(craft_dir, "concept_examples", f"concept_{concept_id}.png")
@@ -556,6 +630,26 @@ def gradcam_vs_concepts_spatial(dataset_key: str, image_path: str, device: str,
         else:
             ax_c.text(0.5, 0.5, f"(no example for {concept_id})",
                       ha="center", va="center", fontsize=11)
+
+        # concept label above the strip
+        ax_c.text(
+            0.5, 1.07,
+            f"Concept {concept_id}",
+            ha="center", va="bottom",
+            fontsize=12,
+            fontweight="bold",
+            color=c_color,
+            transform=ax_c.transAxes,
+        )
+
+        # importance percentage below the strip
+        ax_c.text(
+            0.5, -0.05,
+            f"Importance: {top_values[i]*100:.1f}%",
+            ha="center", va="top",
+            fontsize=10,
+            transform=ax_c.transAxes,
+        )
 
     out_path = os.path.join(os.getcwd(), "output_gradcam_vs_concepts_spatial.png")
     plt.savefig(out_path, dpi=150, bbox_inches="tight", pad_inches=0.2)
