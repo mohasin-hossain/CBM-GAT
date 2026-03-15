@@ -242,12 +242,31 @@ def gradcam_vs_concepts(dataset_key: str, image_path: str, device: str,
     )
     blended_medical = overlay_heatmap(image_pil_cbm, medical_heatmap, alpha)
 
+    # Select exactly one top patch per top concept (clear color–concept link)
+    selected_indices = []
+    patch_importance_np = patch_importance.detach().cpu().numpy()
+    # patches_U is numpy [num_patches, K]; use its columns directly
+    num_patches, num_concepts_total = patches_U.shape
+
+    for concept_id in top_concepts:
+        if concept_id >= num_concepts_total:
+            continue
+        concept_activations = patches_U[:, concept_id]  # numpy [num_patches]
+        # score: how important this patch is for this concept and for the decision
+        scores = concept_activations * patch_importance_np
+        best_idx = int(np.argmax(scores))
+        selected_indices.append((concept_id, best_idx))
+
+    # fallback: if no concept produced a valid index, keep previous behavior
+    if not selected_indices:
+        selected_indices = [(top_concepts[0], idx) for idx in sorted_patch_idx[:top_k]]
+
     draw = ImageDraw.Draw(image_pil_cbm)
-    for idx in sorted_patch_idx[:top_k]:
+    for concept_id, idx in selected_indices:
         row = idx // num_patches_w
         col = idx % num_patches_w
         x, y = col * stride, row * stride
-        c_index = top_concepts.index(patches_C[idx]) if patches_C[idx] in top_concepts else 0
+        c_index = top_concepts.index(concept_id) if concept_id in top_concepts else 0
         outline_color = tuple((colors[c_index] * 255).astype(int))
         draw.rectangle([x, y, x + patch_size, y + patch_size],
                        outline=tuple(outline_color), width=3)
