@@ -190,6 +190,55 @@ def annotate_concept_patch_panel(
     return img
 
 
+def _greedy_distinct_patch_indices(
+    scores_1d: np.ndarray,
+    num_patches_h: int,
+    num_patches_w: int,
+    max_boxes: int,
+    min_sep: int,
+    floor_frac: float,
+) -> List[int]:
+    """
+    Greedy non-maximum suppression on the patch grid: take high-scoring patches in order,
+    skipping any whose Chebyshev distance to an already chosen patch is < ``min_sep``.
+    Candidates below ``floor_frac * max(scores)`` are never selected (except fallback).
+    """
+    scores_1d = np.asarray(scores_1d, dtype=np.float64).reshape(-1)
+    n = int(num_patches_h * num_patches_w)
+    if scores_1d.size < n:
+        pad = np.zeros(n, dtype=np.float64)
+        pad[: scores_1d.size] = scores_1d
+        scores_1d = pad
+    elif scores_1d.size > n:
+        scores_1d = scores_1d[:n]
+
+    smax = float(scores_1d.max())
+    if smax <= 1e-12:
+        return [int(np.argmax(scores_1d))]
+
+    flat_order = np.argsort(-scores_1d)
+    chosen: List[int] = []
+    for idx in flat_order:
+        idx = int(idx)
+        if scores_1d[idx] < floor_frac * smax:
+            break
+        r, c = idx // num_patches_w, idx % num_patches_w
+        ok = True
+        for j in chosen:
+            r2 = j // num_patches_w
+            c2 = j % num_patches_w
+            if max(abs(r - r2), abs(c - c2)) < min_sep:
+                ok = False
+                break
+        if ok:
+            chosen.append(idx)
+            if len(chosen) >= max_boxes:
+                break
+    if not chosen:
+        chosen = [int(np.argmax(scores_1d))]
+    return chosen
+
+
 def save_concept_heatmaps_row(
     out_basename: str,
     top_concepts: List[int],
@@ -239,6 +288,153 @@ def save_concept_heatmaps_row(
     plt.savefig(out_path, dpi=150, bbox_inches="tight", pad_inches=0.15)
     plt.close(fig)
     print(f"[INFO] Per-concept heatmap row saved to {out_path}")
+    return out_path
+
+
+def save_concept_heatmaps_row_multi_boxes(
+    out_basename: str,
+    top_concepts: List[int],
+    colors: np.ndarray,
+    patches_U: np.ndarray,
+    patch_importance: torch.Tensor,
+    num_patches_h: int,
+    num_patches_w: int,
+    img_size: int,
+    image_pil: Image.Image,
+    alpha: float,
+    stride: int,
+    patch_size: int,
+    max_distinct_patches: int,
+    min_patch_separation: int,
+    floor_score_frac: float,
+) -> str:
+    """
+    Same layout as ``save_concept_heatmaps_row``, but draws multiple patch boxes per concept
+    via :func:`_greedy_distinct_patch_indices`. Saves
+    ``{out_basename}_concept_heatmaps_multi_boxes.png``.
+    """
+    patch_importance_np = patch_importance.detach().cpu().numpy()
+    top_k = len(top_concepts)
+    fig_w = max(12, 4 * top_k)
+    fig, axes = plt.subplots(1, top_k, figsize=(fig_w, 4))
+    if top_k == 1:
+        axes = [axes]
+    for i, concept_id in enumerate(top_concepts):
+        concept_activations = patches_U[:, concept_id]
+        scores = concept_activations * patch_importance_np
+        hm = patch_importance_to_heatmap(
+            torch.from_numpy(scores.astype(np.float32)),
+            num_patches_h,
+            num_patches_w,
+            img_size=img_size,
+        )
+        blended = overlay_heatmap(image_pil, hm, alpha)
+        pil_img = Image.fromarray(blended)
+        draw = ImageDraw.Draw(pil_img)
+        outline_color = tuple((colors[i] * 255).astype(int))
+        for idx in _greedy_distinct_patch_indices(
+            scores,
+            num_patches_h,
+            num_patches_w,
+            max_distinct_patches,
+            min_patch_separation,
+            floor_score_frac,
+        ):
+            row = idx // num_patches_w
+            col = idx % num_patches_w
+            x0 = col * stride
+            y0 = row * stride
+            draw.rectangle(
+                [x0, y0, x0 + patch_size, y0 + patch_size],
+                outline=outline_color,
+                width=3,
+            )
+        ax = axes[i]
+        ax.imshow(np.asarray(pil_img))
+        ax.set_title(
+            f"Concept {concept_id}",
+            fontsize=12,
+            fontweight="bold",
+            color=tuple(colors[i][:3]),
+        )
+        ax.axis("off")
+        for spine in ax.spines.values():
+            spine.set_edgecolor(colors[i][:3])
+            spine.set_linewidth(3)
+    plt.tight_layout()
+    out_path = os.path.join(os.getcwd(), f"{out_basename}_concept_heatmaps_multi_boxes.png")
+    plt.savefig(out_path, dpi=150, bbox_inches="tight", pad_inches=0.15)
+    plt.close(fig)
+    print(f"[INFO] Per-concept heatmap row (multi-box) saved to {out_path}")
+    return out_path
+
+
+def save_concept_multi_boxes_on_image_row(
+    out_basename: str,
+    top_concepts: List[int],
+    colors: np.ndarray,
+    patches_U: np.ndarray,
+    patch_importance: torch.Tensor,
+    num_patches_h: int,
+    num_patches_w: int,
+    image_pil: Image.Image,
+    stride: int,
+    patch_size: int,
+    max_distinct_patches: int,
+    min_patch_separation: int,
+    floor_score_frac: float,
+) -> str:
+    """
+    One row per top concept: **raw CBM image only** (no heatmap overlay) with the same
+    greedy multi-patch boxes as :func:`save_concept_heatmaps_row_multi_boxes`.
+    Saves ``{out_basename}_concept_multi_boxes_image.png``.
+    """
+    patch_importance_np = patch_importance.detach().cpu().numpy()
+    top_k = len(top_concepts)
+    fig_w = max(12, 4 * top_k)
+    fig, axes = plt.subplots(1, top_k, figsize=(fig_w, 4))
+    if top_k == 1:
+        axes = [axes]
+    for i, concept_id in enumerate(top_concepts):
+        concept_activations = patches_U[:, concept_id]
+        scores = concept_activations * patch_importance_np
+        pil_img = image_pil.copy()
+        draw = ImageDraw.Draw(pil_img)
+        outline_color = tuple((colors[i] * 255).astype(int))
+        for idx in _greedy_distinct_patch_indices(
+            scores,
+            num_patches_h,
+            num_patches_w,
+            max_distinct_patches,
+            min_patch_separation,
+            floor_score_frac,
+        ):
+            row = idx // num_patches_w
+            col = idx % num_patches_w
+            x0 = col * stride
+            y0 = row * stride
+            draw.rectangle(
+                [x0, y0, x0 + patch_size, y0 + patch_size],
+                outline=outline_color,
+                width=3,
+            )
+        ax = axes[i]
+        ax.imshow(np.asarray(pil_img))
+        ax.set_title(
+            f"Concept {concept_id}",
+            fontsize=12,
+            fontweight="bold",
+            color=tuple(colors[i][:3]),
+        )
+        ax.axis("off")
+        for spine in ax.spines.values():
+            spine.set_edgecolor(colors[i][:3])
+            spine.set_linewidth(3)
+    plt.tight_layout()
+    out_path = os.path.join(os.getcwd(), f"{out_basename}_concept_multi_boxes_image.png")
+    plt.savefig(out_path, dpi=150, bbox_inches="tight", pad_inches=0.15)
+    plt.close(fig)
+    print(f"[INFO] Per-concept multi-box row (image only) saved to {out_path}")
     return out_path
 
 
@@ -464,7 +660,12 @@ def gradcam_vs_concepts_medical(dataset_key: str, image_path: str, device: str,
                                 patch_size: int, stride_r: float,
                                 top_k_max: int, min_concept_weight: float,
                                 *,
-                                save_concept_heatmaps: bool = False):
+                                save_concept_heatmaps: bool = False,
+                                save_concept_heatmap_multi_boxes: bool = False,
+                                save_concept_multi_boxes_on_image: bool = False,
+                                max_distinct_patches_per_concept: int = 4,
+                                min_patch_separation: int = 3,
+                                floor_score_frac: float = 0.15):
     """
     Left half  : CBM-GAT spatial heatmap (medical decision) + prediction
     Right half : CBM-GAT concept patches, importance bars, concept examples
@@ -636,6 +837,40 @@ def gradcam_vs_concepts_medical(dataset_key: str, image_path: str, device: str,
             image_pil=image_pil_cbm,
             alpha=alpha,
         )
+    if save_concept_heatmap_multi_boxes:
+        save_concept_heatmaps_row_multi_boxes(
+            "output_gradcam_vs_concepts_medical",
+            top_concepts,
+            colors,
+            patches_U,
+            patch_importance,
+            num_patches_h,
+            num_patches_w,
+            img_size=image_pil_cbm.width,
+            image_pil=image_pil_cbm,
+            alpha=alpha,
+            stride=stride,
+            patch_size=patch_size,
+            max_distinct_patches=max_distinct_patches_per_concept,
+            min_patch_separation=min_patch_separation,
+            floor_score_frac=floor_score_frac,
+        )
+    if save_concept_multi_boxes_on_image:
+        save_concept_multi_boxes_on_image_row(
+            "output_gradcam_vs_concepts_medical",
+            top_concepts,
+            colors,
+            patches_U,
+            patch_importance,
+            num_patches_h,
+            num_patches_w,
+            image_pil=image_pil_cbm,
+            stride=stride,
+            patch_size=patch_size,
+            max_distinct_patches=max_distinct_patches_per_concept,
+            min_patch_separation=min_patch_separation,
+            floor_score_frac=floor_score_frac,
+        )
     print(f"CBM-GAT   -> class {pred_idx} ({pred_conf*100:.2f}%)")
     print(f"Top concepts: {', '.join(str(c) for c in top_concepts)}")
 
@@ -646,7 +881,12 @@ def gradcam_vs_concepts_spatial(dataset_key: str, image_path: str, device: str,
                                 patch_size: int, stride_r: float,
                                 top_k_max: int, min_concept_weight: float,
                                 *,
-                                save_concept_heatmaps: bool = False):
+                                save_concept_heatmaps: bool = False,
+                                save_concept_heatmap_multi_boxes: bool = False,
+                                save_concept_multi_boxes_on_image: bool = False,
+                                max_distinct_patches_per_concept: int = 4,
+                                min_patch_separation: int = 3,
+                                floor_score_frac: float = 0.15):
     """
     Left half  : ImageNet-pretrained ResNet-50 spatial Grad-CAM
     Right half : CBM-GAT concept patches, importance bars, concept examples
@@ -815,6 +1055,40 @@ def gradcam_vs_concepts_spatial(dataset_key: str, image_path: str, device: str,
             image_pil=image_pil_cbm,
             alpha=alpha,
         )
+    if save_concept_heatmap_multi_boxes:
+        save_concept_heatmaps_row_multi_boxes(
+            "output_gradcam_vs_concepts_spatial",
+            top_concepts,
+            colors,
+            patches_U,
+            patch_importance,
+            num_patches_h,
+            num_patches_w,
+            img_size=image_pil_cbm.width,
+            image_pil=image_pil_cbm,
+            alpha=alpha,
+            stride=stride,
+            patch_size=patch_size,
+            max_distinct_patches=max_distinct_patches_per_concept,
+            min_patch_separation=min_patch_separation,
+            floor_score_frac=floor_score_frac,
+        )
+    if save_concept_multi_boxes_on_image:
+        save_concept_multi_boxes_on_image_row(
+            "output_gradcam_vs_concepts_spatial",
+            top_concepts,
+            colors,
+            patches_U,
+            patch_importance,
+            num_patches_h,
+            num_patches_w,
+            image_pil=image_pil_cbm,
+            stride=stride,
+            patch_size=patch_size,
+            max_distinct_patches=max_distinct_patches_per_concept,
+            min_patch_separation=min_patch_separation,
+            floor_score_frac=floor_score_frac,
+        )
     print(f"ResNet-50 -> class {gc_cls} ({gc_conf*100:.2f}%)")
     print(f"CBM-GAT   -> class {pred_idx} ({pred_conf*100:.2f}%)")
     print(f"Top concepts: {', '.join(str(c) for c in top_concepts)}")
@@ -826,7 +1100,12 @@ def gradcam_vs_concepts_cnn(dataset_key: str, image_path: str, device: str,
                             patch_size: int, stride_r: float,
                             top_k_max: int, min_concept_weight: float,
                             *,
-                            save_concept_heatmaps: bool = False):
+                            save_concept_heatmaps: bool = False,
+                            save_concept_heatmap_multi_boxes: bool = False,
+                            save_concept_multi_boxes_on_image: bool = False,
+                            max_distinct_patches_per_concept: int = 4,
+                            min_patch_separation: int = 3,
+                            floor_score_frac: float = 0.15):
     """
     Left half  : Fine-tuned ResNet-50 Grad-CAM (CNN baseline, auto-loaded)
     Right half : CBM-GAT concept patches, importance bars, concept examples
@@ -1001,6 +1280,40 @@ def gradcam_vs_concepts_cnn(dataset_key: str, image_path: str, device: str,
             image_pil=image_pil_cbm,
             alpha=alpha,
         )
+    if save_concept_heatmap_multi_boxes:
+        save_concept_heatmaps_row_multi_boxes(
+            "output_gradcam_vs_concepts_cnn",
+            top_concepts,
+            colors,
+            patches_U,
+            patch_importance,
+            num_patches_h,
+            num_patches_w,
+            img_size=image_pil_cbm.width,
+            image_pil=image_pil_cbm,
+            alpha=alpha,
+            stride=stride,
+            patch_size=patch_size,
+            max_distinct_patches=max_distinct_patches_per_concept,
+            min_patch_separation=min_patch_separation,
+            floor_score_frac=floor_score_frac,
+        )
+    if save_concept_multi_boxes_on_image:
+        save_concept_multi_boxes_on_image_row(
+            "output_gradcam_vs_concepts_cnn",
+            top_concepts,
+            colors,
+            patches_U,
+            patch_importance,
+            num_patches_h,
+            num_patches_w,
+            image_pil=image_pil_cbm,
+            stride=stride,
+            patch_size=patch_size,
+            max_distinct_patches=max_distinct_patches_per_concept,
+            min_patch_separation=min_patch_separation,
+            floor_score_frac=floor_score_frac,
+        )
     print(f"Fine-tuned CNN -> class {gc_cls} ({gc_conf*100:.2f}%)")
     print(f"CBM-GAT        -> class {pred_idx} ({pred_conf*100:.2f}%)")
     print(f"Top concepts: {', '.join(str(c) for c in top_concepts)}")
@@ -1050,6 +1363,36 @@ def main():
         action="store_true",
         help="In compare_* modes, also save a second PNG: one row of per-concept patch heatmaps "
         "(jet overlay on the CBM image; blend strength matches --alpha).",
+    )
+    cmp.add_argument(
+        "--save-concept-heatmap-multi-boxes",
+        action="store_true",
+        help="In compare_* modes, also save an additional PNG: same layout as per-concept heatmaps "
+        "but with multiple distinct patch boxes per concept (greedy NMS on patch grid).",
+    )
+    cmp.add_argument(
+        "--save-concept-multi-boxes-on-image",
+        action="store_true",
+        help="In compare_* modes, also save an additional PNG: same multi-box selection as "
+        "--save-concept-heatmap-multi-boxes but boxes drawn on the raw CBM image (no jet overlay).",
+    )
+    cmp.add_argument(
+        "--max-distinct-patches-per-concept",
+        type=int,
+        default=4,
+        help="Cap for multi-box heatmap figure (greedy selection).",
+    )
+    cmp.add_argument(
+        "--min-patch-separation",
+        type=int,
+        default=3,
+        help="Minimum Chebyshev distance (in patch cells) between boxes for the same concept.",
+    )
+    cmp.add_argument(
+        "--floor-score-frac",
+        type=float,
+        default=0.15,
+        help="Ignore patch candidates below this fraction of the max per-concept score.",
     )
 
     args = ap.parse_args()
@@ -1109,6 +1452,11 @@ def main():
             top_k_max=args.top_k_max,
             min_concept_weight=args.min_concept_weight,
             save_concept_heatmaps=args.save_concept_heatmaps,
+            save_concept_heatmap_multi_boxes=args.save_concept_heatmap_multi_boxes,
+            save_concept_multi_boxes_on_image=args.save_concept_multi_boxes_on_image,
+            max_distinct_patches_per_concept=args.max_distinct_patches_per_concept,
+            min_patch_separation=args.min_patch_separation,
+            floor_score_frac=args.floor_score_frac,
         )
     elif mode == "compare_cnn_concepts":
         gradcam_vs_concepts_cnn(
@@ -1124,6 +1472,11 @@ def main():
             top_k_max=args.top_k_max,
             min_concept_weight=args.min_concept_weight,
             save_concept_heatmaps=args.save_concept_heatmaps,
+            save_concept_heatmap_multi_boxes=args.save_concept_heatmap_multi_boxes,
+            save_concept_multi_boxes_on_image=args.save_concept_multi_boxes_on_image,
+            max_distinct_patches_per_concept=args.max_distinct_patches_per_concept,
+            min_patch_separation=args.min_patch_separation,
+            floor_score_frac=args.floor_score_frac,
         )
     elif mode == "compare_medical_concepts":
         gradcam_vs_concepts_medical(
@@ -1138,6 +1491,11 @@ def main():
             top_k_max=args.top_k_max,
             min_concept_weight=args.min_concept_weight,
             save_concept_heatmaps=args.save_concept_heatmaps,
+            save_concept_heatmap_multi_boxes=args.save_concept_heatmap_multi_boxes,
+            save_concept_multi_boxes_on_image=args.save_concept_multi_boxes_on_image,
+            max_distinct_patches_per_concept=args.max_distinct_patches_per_concept,
+            min_patch_separation=args.min_patch_separation,
+            floor_score_frac=args.floor_score_frac,
         )
     else:
         raise ValueError(f"Unknown mode: {mode}")

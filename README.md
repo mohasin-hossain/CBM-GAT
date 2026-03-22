@@ -80,8 +80,10 @@ Common flags: `--device`, `--alpha` (overlay blend), `--backbone resnet50`, `--t
 **Compare modes only** (`compare_*`): the concept patch column draws **one patch-sized box per top concept** (argmax of concept activation × patch importance), matching the bar colors.
 
 - `--save-concept-heatmaps` — also save a second figure: one **row** of per-concept patch heatmaps as **jet overlays on the same CBM image** (blend strength uses `--alpha`, same as other overlays).
+- `--save-concept-heatmap-multi-boxes` — also save an **additional** figure with the same layout, but **several distinct patch boxes per concept** (greedy selection with minimum spacing on the patch grid; defaults: `--max-distinct-patches-per-concept 4`, `--min-patch-separation 3`, `--floor-score-frac 0.15`). Full algorithm and notation: local `Implementations.md` (gitignored; see repository docs if provided).
+- `--save-concept-multi-boxes-on-image` — also save an **additional** figure: **same** greedy multi-box selection as above, but boxes are drawn on the **raw CBM image** (no jet heatmap overlay). Uses the same tuning flags as multi-box heatmaps.
 
-**Output PNGs** (written to the current working directory): e.g. `output_gradcam_spatial.png`, `output_gradcam_cnn.png`, `output_gradcam_medical.png`, `output_gradcam_vs_concepts_spatial.png`, `output_gradcam_vs_concepts_cnn.png`, `output_gradcam_vs_concepts_medical.png`. With `--save-concept-heatmaps`, compare modes also write `output_gradcam_vs_concepts_{spatial,cnn,medical}_concept_heatmaps.png`.
+**Output PNGs** (written to the current working directory): e.g. `output_gradcam_spatial.png`, `output_gradcam_cnn.png`, `output_gradcam_medical.png`, `output_gradcam_vs_concepts_spatial.png`, `output_gradcam_vs_concepts_cnn.png`, `output_gradcam_vs_concepts_medical.png`. With `--save-concept-heatmaps`, compare modes also write `output_gradcam_vs_concepts_{spatial,cnn,medical}_concept_heatmaps.png`. With `--save-concept-heatmap-multi-boxes`, they also write `output_gradcam_vs_concepts_{spatial,cnn,medical}_concept_heatmaps_multi_boxes.png`. With `--save-concept-multi-boxes-on-image`, they also write `output_gradcam_vs_concepts_{spatial,cnn,medical}_concept_multi_boxes_image.png`.
 
 ### CNN baseline checkpoint (for `standalone_cnn` / `compare_cnn_concepts`)
 
