@@ -11,9 +11,11 @@ from torchvision import transforms
 from utils import ImageDataset, _tensors_from_loader
 
 current_dir = os.getcwd()
+# Dataset CSVs live in the repo; use config's location so paths work when cwd is elsewhere (e.g. SLURM workdir)
+_config_dir = os.path.dirname(os.path.abspath(__file__))
 default_output_dir = os.path.join(current_dir, "concept_graph_data")
 default_eval_dir = os.path.join(current_dir, "results")
-default_datasets_dir = os.path.join(current_dir, "datasets")
+default_datasets_dir = os.path.join(_config_dir, "datasets")
 
 
 

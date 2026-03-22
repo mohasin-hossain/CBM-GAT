@@ -145,6 +145,103 @@ def patch_importance_to_heatmap(patch_importance: torch.Tensor,
     return dense.squeeze().cpu().numpy()
 
 
+def annotate_concept_patch_panel(
+    image_pil_cbm: Image.Image,
+    patches_U: np.ndarray,
+    patch_importance_np: np.ndarray,
+    top_concepts: List[int],
+    colors: np.ndarray,
+    stride: int,
+    num_patches_w: int,
+    patch_size: int,
+    sorted_patch_idx: List[int],
+    top_k: int,
+) -> Image.Image:
+    """
+    Draw exactly one patch-level box per top concept: argmax of
+    (concept activation × patch importance). Falls back to top patch indices if needed.
+    """
+    img = image_pil_cbm.copy()
+    draw = ImageDraw.Draw(img)
+    num_concepts_total = patches_U.shape[1]
+
+    selected_indices = []
+    for concept_id in top_concepts:
+        if concept_id >= num_concepts_total:
+            continue
+        concept_activations = patches_U[:, concept_id]
+        scores = concept_activations * patch_importance_np
+        best_idx = int(np.argmax(scores))
+        selected_indices.append((concept_id, best_idx))
+    if not selected_indices:
+        selected_indices = [(top_concepts[0], idx) for idx in sorted_patch_idx[:top_k]]
+
+    for concept_id, idx in selected_indices:
+        row = idx // num_patches_w
+        col = idx % num_patches_w
+        x, y = col * stride, row * stride
+        c_index = top_concepts.index(concept_id) if concept_id in top_concepts else 0
+        outline_color = tuple((colors[c_index] * 255).astype(int))
+        draw.rectangle(
+            [x, y, x + patch_size, y + patch_size],
+            outline=tuple(outline_color),
+            width=3,
+        )
+    return img
+
+
+def save_concept_heatmaps_row(
+    out_basename: str,
+    top_concepts: List[int],
+    colors: np.ndarray,
+    patches_U: np.ndarray,
+    patch_importance: torch.Tensor,
+    num_patches_h: int,
+    num_patches_w: int,
+    img_size: int,
+    image_pil: Image.Image,
+    alpha: float,
+) -> str:
+    """
+    One row of per-concept patch heatmaps overlaid on the same CBM image (``--alpha`` blend).
+    Saves ``{out_basename}_concept_heatmaps.png`` in cwd. Returns the path.
+    """
+    patch_importance_np = patch_importance.detach().cpu().numpy()
+    top_k = len(top_concepts)
+    fig_w = max(12, 4 * top_k)
+    fig, axes = plt.subplots(1, top_k, figsize=(fig_w, 4))
+    if top_k == 1:
+        axes = [axes]
+    for i, concept_id in enumerate(top_concepts):
+        concept_activations = patches_U[:, concept_id]
+        scores = concept_activations * patch_importance_np
+        hm = patch_importance_to_heatmap(
+            torch.from_numpy(scores.astype(np.float32)),
+            num_patches_h,
+            num_patches_w,
+            img_size=img_size,
+        )
+        blended = overlay_heatmap(image_pil, hm, alpha)
+        ax = axes[i]
+        ax.imshow(blended)
+        ax.set_title(
+            f"Concept {concept_id}",
+            fontsize=12,
+            fontweight="bold",
+            color=tuple(colors[i][:3]),
+        )
+        ax.axis("off")
+        for spine in ax.spines.values():
+            spine.set_edgecolor(colors[i][:3])
+            spine.set_linewidth(3)
+    plt.tight_layout()
+    out_path = os.path.join(os.getcwd(), f"{out_basename}_concept_heatmaps.png")
+    plt.savefig(out_path, dpi=150, bbox_inches="tight", pad_inches=0.15)
+    plt.close(fig)
+    print(f"[INFO] Per-concept heatmap row saved to {out_path}")
+    return out_path
+
+
 # ---------------------------------------------------------------------------
 # Standalone Grad-CAM visualisations
 # ---------------------------------------------------------------------------
@@ -365,7 +462,9 @@ def _compute_cbm_concepts(dataset_key: str, image_path: str, device: str,
 def gradcam_vs_concepts_medical(dataset_key: str, image_path: str, device: str,
                                 backbone: str, alpha: float, output_root: str,
                                 patch_size: int, stride_r: float,
-                                top_k_max: int, min_concept_weight: float):
+                                top_k_max: int, min_concept_weight: float,
+                                *,
+                                save_concept_heatmaps: bool = False):
     """
     Left half  : CBM-GAT spatial heatmap (medical decision) + prediction
     Right half : CBM-GAT concept patches, importance bars, concept examples
@@ -390,34 +489,19 @@ def gradcam_vs_concepts_medical(dataset_key: str, image_path: str, device: str,
     )
     blended_medical = overlay_heatmap(image_pil_cbm, medical_heatmap, alpha)
 
-    # Select exactly one top patch per top concept (clear color–concept link)
-    selected_indices = []
     patch_importance_np = patch_importance.detach().cpu().numpy()
-    # patches_U is numpy [num_patches, K]; use its columns directly
-    num_patches, num_concepts_total = patches_U.shape
-
-    for concept_id in top_concepts:
-        if concept_id >= num_concepts_total:
-            continue
-        concept_activations = patches_U[:, concept_id]  # numpy [num_patches]
-        # score: how important this patch is for this concept and for the decision
-        scores = concept_activations * patch_importance_np
-        best_idx = int(np.argmax(scores))
-        selected_indices.append((concept_id, best_idx))
-
-    # fallback: if no concept produced a valid index, keep previous behavior
-    if not selected_indices:
-        selected_indices = [(top_concepts[0], idx) for idx in sorted_patch_idx[:top_k]]
-
-    draw = ImageDraw.Draw(image_pil_cbm)
-    for concept_id, idx in selected_indices:
-        row = idx // num_patches_w
-        col = idx % num_patches_w
-        x, y = col * stride, row * stride
-        c_index = top_concepts.index(concept_id) if concept_id in top_concepts else 0
-        outline_color = tuple((colors[c_index] * 255).astype(int))
-        draw.rectangle([x, y, x + patch_size, y + patch_size],
-                       outline=tuple(outline_color), width=3)
+    image_pil_cbm_annot = annotate_concept_patch_panel(
+        image_pil_cbm,
+        patches_U,
+        patch_importance_np,
+        top_concepts,
+        colors,
+        stride,
+        num_patches_w,
+        patch_size,
+        sorted_patch_idx,
+        top_k,
+    )
 
     # ---- Build the combined figure ----
     # Layout: [GradCAM overlay | CBM-GAT patches | concept bars | concept examples]
@@ -456,7 +540,7 @@ def gradcam_vs_concepts_medical(dataset_key: str, image_path: str, device: str,
     cbm_gs = gridspec.GridSpecFromSubplotSpec(
         2, 1, subplot_spec=outer_gs[0, 1], height_ratios=[30, 2], hspace=0.1)
     ax_cbm = fig.add_subplot(cbm_gs[0, 0])
-    ax_cbm.imshow(np.array(image_pil_cbm))
+    ax_cbm.imshow(np.array(image_pil_cbm_annot))
     ax_cbm.set_title("CBM-GAT (concept patches)", fontsize=13, fontweight="bold")
     ax_cbm.axis("off")
     ax_cbm_cap = fig.add_subplot(cbm_gs[1, 0])
@@ -539,6 +623,19 @@ def gradcam_vs_concepts_medical(dataset_key: str, image_path: str, device: str,
     plt.savefig(out_path, dpi=150, bbox_inches="tight", pad_inches=0.2)
     plt.close(fig)
     print(f"[INFO] Comparison figure saved to {out_path}")
+    if save_concept_heatmaps:
+        save_concept_heatmaps_row(
+            "output_gradcam_vs_concepts_medical",
+            top_concepts,
+            colors,
+            patches_U,
+            patch_importance,
+            num_patches_h,
+            num_patches_w,
+            img_size=image_pil_cbm.width,
+            image_pil=image_pil_cbm,
+            alpha=alpha,
+        )
     print(f"CBM-GAT   -> class {pred_idx} ({pred_conf*100:.2f}%)")
     print(f"Top concepts: {', '.join(str(c) for c in top_concepts)}")
 
@@ -547,7 +644,9 @@ def gradcam_vs_concepts_spatial(dataset_key: str, image_path: str, device: str,
                                 backbone: str, target_class: Optional[int],
                                 alpha: float, output_root: str,
                                 patch_size: int, stride_r: float,
-                                top_k_max: int, min_concept_weight: float):
+                                top_k_max: int, min_concept_weight: float,
+                                *,
+                                save_concept_heatmaps: bool = False):
     """
     Left half  : ImageNet-pretrained ResNet-50 spatial Grad-CAM
     Right half : CBM-GAT concept patches, importance bars, concept examples
@@ -569,29 +668,20 @@ def gradcam_vs_concepts_spatial(dataset_key: str, image_path: str, device: str,
         patch_size, stride_r, top_k_max, min_concept_weight
     )
 
-    # Select one top patch per concept (same as medical variant)
-    selected_indices = []
+    top_k = len(top_concepts)
     patch_importance_np = patch_importance.detach().cpu().numpy()
-    num_patches, num_concepts_total = patches_U.shape
-    for concept_id in top_concepts:
-        if concept_id >= num_concepts_total:
-            continue
-        concept_activations = patches_U[:, concept_id]
-        scores = concept_activations * patch_importance_np
-        best_idx = int(np.argmax(scores))
-        selected_indices.append((concept_id, best_idx))
-    if not selected_indices:
-        selected_indices = [(top_concepts[0], idx) for idx in sorted_patch_idx[:top_k_max]]
-
-    draw = ImageDraw.Draw(image_pil_cbm)
-    for concept_id, idx in selected_indices:
-        row = idx // num_patches_w
-        col = idx % num_patches_w
-        x, y = col * stride, row * stride
-        c_index = top_concepts.index(concept_id) if concept_id in top_concepts else 0
-        outline_color = tuple((colors[c_index] * 255).astype(int))
-        draw.rectangle([x, y, x + patch_size, y + patch_size],
-                       outline=tuple(outline_color), width=3)
+    image_pil_cbm_annot = annotate_concept_patch_panel(
+        image_pil_cbm,
+        patches_U,
+        patch_importance_np,
+        top_concepts,
+        colors,
+        stride,
+        num_patches_w,
+        patch_size,
+        sorted_patch_idx,
+        top_k,
+    )
 
     # Build figure: [spatial Grad-CAM | CBM-GAT patches | concept bars | examples]
     fig = plt.figure(figsize=(32, 8), constrained_layout=True)
@@ -629,7 +719,7 @@ def gradcam_vs_concepts_spatial(dataset_key: str, image_path: str, device: str,
     cbm_gs = gridspec.GridSpecFromSubplotSpec(
         2, 1, subplot_spec=outer_gs[0, 1], height_ratios=[30, 2], hspace=0.1)
     ax_cbm = fig.add_subplot(cbm_gs[0, 0])
-    ax_cbm.imshow(np.array(image_pil_cbm))
+    ax_cbm.imshow(np.array(image_pil_cbm_annot))
     ax_cbm.set_title("CBM-GAT (concept patches)", fontsize=13, fontweight="bold")
     ax_cbm.axis("off")
     ax_cbm_cap = fig.add_subplot(cbm_gs[1, 0])
@@ -647,7 +737,6 @@ def gradcam_vs_concepts_spatial(dataset_key: str, image_path: str, device: str,
         2, 1, subplot_spec=outer_gs[0, 2], height_ratios=[30, 2], hspace=0.1
     )
     ax_bar = fig.add_subplot(bar_gs[0, 0])
-    top_k = len(top_concepts)
     y_pos = np.arange(top_k)
     bars = ax_bar.barh(y_pos, top_values, color=colors[:top_k], align="center")
     ax_bar.set_yticks(y_pos)
@@ -713,6 +802,19 @@ def gradcam_vs_concepts_spatial(dataset_key: str, image_path: str, device: str,
     plt.savefig(out_path, dpi=150, bbox_inches="tight", pad_inches=0.2)
     plt.close(fig)
     print(f"[INFO] Spatial comparison figure saved to {out_path}")
+    if save_concept_heatmaps:
+        save_concept_heatmaps_row(
+            "output_gradcam_vs_concepts_spatial",
+            top_concepts,
+            colors,
+            patches_U,
+            patch_importance,
+            num_patches_h,
+            num_patches_w,
+            img_size=image_pil_cbm.width,
+            image_pil=image_pil_cbm,
+            alpha=alpha,
+        )
     print(f"ResNet-50 -> class {gc_cls} ({gc_conf*100:.2f}%)")
     print(f"CBM-GAT   -> class {pred_idx} ({pred_conf*100:.2f}%)")
     print(f"Top concepts: {', '.join(str(c) for c in top_concepts)}")
@@ -722,7 +824,9 @@ def gradcam_vs_concepts_cnn(dataset_key: str, image_path: str, device: str,
                             backbone: str, target_class: Optional[int],
                             alpha: float, output_root: str,
                             patch_size: int, stride_r: float,
-                            top_k_max: int, min_concept_weight: float):
+                            top_k_max: int, min_concept_weight: float,
+                            *,
+                            save_concept_heatmaps: bool = False):
     """
     Left half  : Fine-tuned ResNet-50 Grad-CAM (CNN baseline, auto-loaded)
     Right half : CBM-GAT concept patches, importance bars, concept examples
@@ -754,29 +858,20 @@ def gradcam_vs_concepts_cnn(dataset_key: str, image_path: str, device: str,
         patch_size, stride_r, top_k_max, min_concept_weight
     )
 
-    # Select one top patch per concept
-    selected_indices = []
+    top_k = len(top_concepts)
     patch_importance_np = patch_importance.detach().cpu().numpy()
-    num_patches, num_concepts_total = patches_U.shape
-    for concept_id in top_concepts:
-        if concept_id >= num_concepts_total:
-            continue
-        concept_activations = patches_U[:, concept_id]
-        scores = concept_activations * patch_importance_np
-        best_idx = int(np.argmax(scores))
-        selected_indices.append((concept_id, best_idx))
-    if not selected_indices:
-        selected_indices = [(top_concepts[0], idx) for idx in sorted_patch_idx[:top_k_max]]
-
-    draw = ImageDraw.Draw(image_pil_cbm)
-    for concept_id, idx in selected_indices:
-        row = idx // num_patches_w
-        col = idx % num_patches_w
-        x, y = col * stride, row * stride
-        c_index = top_concepts.index(concept_id) if concept_id in top_concepts else 0
-        outline_color = tuple((colors[c_index] * 255).astype(int))
-        draw.rectangle([x, y, x + patch_size, y + patch_size],
-                       outline=tuple(outline_color), width=3)
+    image_pil_cbm_annot = annotate_concept_patch_panel(
+        image_pil_cbm,
+        patches_U,
+        patch_importance_np,
+        top_concepts,
+        colors,
+        stride,
+        num_patches_w,
+        patch_size,
+        sorted_patch_idx,
+        top_k,
+    )
 
     # Build figure: [CNN Grad-CAM | CBM-GAT patches | concept bars | examples]
     fig = plt.figure(figsize=(32, 8), constrained_layout=True)
@@ -813,7 +908,7 @@ def gradcam_vs_concepts_cnn(dataset_key: str, image_path: str, device: str,
     cbm_gs = gridspec.GridSpecFromSubplotSpec(
         2, 1, subplot_spec=outer_gs[0, 1], height_ratios=[30, 2], hspace=0.1)
     ax_cbm = fig.add_subplot(cbm_gs[0, 0])
-    ax_cbm.imshow(np.array(image_pil_cbm))
+    ax_cbm.imshow(np.array(image_pil_cbm_annot))
     ax_cbm.set_title("CBM-GAT (concept patches)", fontsize=13, fontweight="bold")
     ax_cbm.axis("off")
     ax_cbm_cap = fig.add_subplot(cbm_gs[1, 0])
@@ -831,7 +926,6 @@ def gradcam_vs_concepts_cnn(dataset_key: str, image_path: str, device: str,
         2, 1, subplot_spec=outer_gs[0, 2], height_ratios=[30, 2], hspace=0.1
     )
     ax_bar = fig.add_subplot(bar_gs[0, 0])
-    top_k = len(top_concepts)
     y_pos = np.arange(top_k)
     bars = ax_bar.barh(y_pos, top_values, color=colors[:top_k], align="center")
     ax_bar.set_yticks(y_pos)
@@ -894,6 +988,19 @@ def gradcam_vs_concepts_cnn(dataset_key: str, image_path: str, device: str,
     plt.savefig(out_path, dpi=150, bbox_inches="tight", pad_inches=0.2)
     plt.close(fig)
     print(f"[INFO] CNN vs concepts comparison figure saved to {out_path}")
+    if save_concept_heatmaps:
+        save_concept_heatmaps_row(
+            "output_gradcam_vs_concepts_cnn",
+            top_concepts,
+            colors,
+            patches_U,
+            patch_importance,
+            num_patches_h,
+            num_patches_w,
+            img_size=image_pil_cbm.width,
+            image_pil=image_pil_cbm,
+            alpha=alpha,
+        )
     print(f"Fine-tuned CNN -> class {gc_cls} ({gc_conf*100:.2f}%)")
     print(f"CBM-GAT        -> class {pred_idx} ({pred_conf*100:.2f}%)")
     print(f"Top concepts: {', '.join(str(c) for c in top_concepts)}")
@@ -938,6 +1045,12 @@ def main():
     cmp.add_argument("--stride-r", type=float, default=0.5)
     cmp.add_argument("--top-k-max", type=int, default=3)
     cmp.add_argument("--min-concept-weight", type=float, default=0.01)
+    cmp.add_argument(
+        "--save-concept-heatmaps",
+        action="store_true",
+        help="In compare_* modes, also save a second PNG: one row of per-concept patch heatmaps "
+        "(jet overlay on the CBM image; blend strength matches --alpha).",
+    )
 
     args = ap.parse_args()
 
@@ -995,6 +1108,7 @@ def main():
             stride_r=args.stride_r,
             top_k_max=args.top_k_max,
             min_concept_weight=args.min_concept_weight,
+            save_concept_heatmaps=args.save_concept_heatmaps,
         )
     elif mode == "compare_cnn_concepts":
         gradcam_vs_concepts_cnn(
@@ -1009,6 +1123,7 @@ def main():
             stride_r=args.stride_r,
             top_k_max=args.top_k_max,
             min_concept_weight=args.min_concept_weight,
+            save_concept_heatmaps=args.save_concept_heatmaps,
         )
     elif mode == "compare_medical_concepts":
         gradcam_vs_concepts_medical(
@@ -1022,6 +1137,7 @@ def main():
             stride_r=args.stride_r,
             top_k_max=args.top_k_max,
             min_concept_weight=args.min_concept_weight,
+            save_concept_heatmaps=args.save_concept_heatmaps,
         )
     else:
         raise ValueError(f"Unknown mode: {mode}")

@@ -39,6 +39,86 @@ python explain_image.py \
 #### Example visual explanations for a general image:
 ![Explanation 1](https://github.com/anaramirli/gatCBM_msc_thesis/blob/main/assets/output_explanation.png)
 
+---
+
+## Grad-CAM (`gradcam_explain.py`)
+
+Spatial **Grad-CAM** heatmaps complement concept-based explanations: they show *where* a CNN focuses; CBM-GAT shows *which concepts* matter. The script supports **six modes** via `--mode`.
+
+### Modes
+
+| Mode | Description | Needs `--file-root`? |
+|------|-------------|----------------------|
+| `standalone_spatial` | ResNet-50 **ImageNet** pretrained only — 3 panels (original, heatmap, overlay). | **No** |
+| `standalone_cnn` | ResNet-50 **fine-tuned** on your dataset (CNN baseline) — 3 panels. | **Yes** — loads checkpoint under `file-root` (see below). |
+| `standalone_medical` | CBM-GAT **patch-importance** heatmap (from GAT gradients), no ImageNet/CNN spatial Grad-CAM. | **Yes** |
+| `compare_spatial_concepts` | ImageNet ResNet-50 Grad-CAM **vs** CBM-GAT concepts (4 columns). | **Yes** |
+| `compare_cnn_concepts` | Fine-tuned CNN Grad-CAM **vs** CBM-GAT concepts (4 columns). | **Yes** |
+| `compare_medical_concepts` | CBM-GAT medical heatmap **vs** CBM-GAT concepts (4 columns). | **Yes** |
+
+If `--mode` is omitted, behavior matches older scripts: without `--compare` → `standalone_spatial`; with `--compare` → `compare_medical_concepts`.
+
+### CLI example (local)
+
+```bash
+# ImageNet backbone only (no trained CBM-GAT artifacts)
+python gradcam_explain.py \
+  --mode standalone_spatial \
+  --dataset ham10000 \
+  --image_path /path/to/image.jpg
+
+# Modes that need CRAFT + GAT + (for CNN modes) CNN baseline checkpoint
+python gradcam_explain.py \
+  --mode compare_cnn_concepts \
+  --dataset ham10000 \
+  --image_path /path/to/image.jpg \
+  --file-root /path/to/concept_graph_data
+```
+
+Common flags: `--device`, `--alpha` (overlay blend), `--backbone resnet50`, `--target-class` (optional class index for Grad-CAM). For CBM-GAT panels: `--patch-size`, `--stride-r`, `--top-k-max`, `--min-concept-weight`.
+
+**Compare modes only** (`compare_*`): the concept patch column draws **one patch-sized box per top concept** (argmax of concept activation × patch importance), matching the bar colors.
+
+- `--save-concept-heatmaps` — also save a second figure: one **row** of per-concept patch heatmaps as **jet overlays on the same CBM image** (blend strength uses `--alpha`, same as other overlays).
+
+**Output PNGs** (written to the current working directory): e.g. `output_gradcam_spatial.png`, `output_gradcam_cnn.png`, `output_gradcam_medical.png`, `output_gradcam_vs_concepts_spatial.png`, `output_gradcam_vs_concepts_cnn.png`, `output_gradcam_vs_concepts_medical.png`. With `--save-concept-heatmaps`, compare modes also write `output_gradcam_vs_concepts_{spatial,cnn,medical}_concept_heatmaps.png`.
+
+### CNN baseline checkpoint (for `standalone_cnn` / `compare_cnn_concepts`)
+
+Train a ResNet-50 directly on images (no graphs) with `train_cnn.py` (see below). The checkpoint is saved as a dict `{"state_dict", "num_classes"}` at:
+
+`{file_root}/{dataset}/models_cnn/{dataset}/{dataset}_resnet50_cnn.pt`
+
+Grad-CAM loads it automatically — **no manual class count or path** beyond `--file-root`.
+
+### Cluster (SLURM)
+
+- `scripts/sbatch_gradcam.sh` — set `MODE` and `RUN_ROOT` (path to your `concept_graph_data`). For compare modes only, optional `GRADCAM_EXTRA_ARGS` (e.g. `--save-concept-heatmaps`) is appended to the Python command; standalone modes ignore it. Then `sbatch`.
+- `scripts/sbatch_train_cnn.sh` — trains the CNN baseline; writes metrics and the `.pt` file above under your `--output-root`.
+
+---
+
+## CNN-only baseline (`train_cnn.py`)
+
+A **ResNet-50** classifier trained **directly** on image tensors (same train/val/test CSV splits as in `config.py`) — **no** concept graphs, **no** GAT. Used as a performance and Grad-CAM baseline.
+
+```bash
+python train_cnn.py \
+  --dataset ham10000 \
+  --output-root concept_graph_data \
+  --device cuda \
+  --epochs 300 --patience 50 \
+  --lr 1e-3 --weight-decay 2e-4 \
+  --save-model
+```
+
+- **Train / val / test**: training uses train + val (Lightning); **test** is only evaluated after training for reported metrics (same pattern as `train_model.py`).
+- **Outputs**: `metrics_cnn.json` and `{dataset}_resnet50_cnn.pt` under `{output_root}/{dataset}/models_cnn/{dataset}/`.
+
+Dataset CSV paths are resolved relative to the **repository** `datasets/` folder (see `config.py`), so jobs work even when the process `cwd` is a SLURM work directory.
+
+---
+
 ## Setting up Environment
 
 ```bash
@@ -81,14 +161,18 @@ Download the required datasets:
 
 - `build_concept_graphs.py` — discover concepts & build graphs, can be used for each separately too.
 - `train_model.py` — train GAT and write metrics, also used for eval.
+- `train_cnn.py` — train ResNet-50 CNN baseline on images only (no graphs); saves CNN checkpoint for Grad-CAM modes.
+- `gradcam_explain.py` — Grad-CAM heatmaps and side-by-side comparisons with CBM-GAT concepts (`--mode`; see **Grad-CAM** section above).
+- `explain_image.py` — concept-based explanation for a single image.
 - `eval_benchmark.py` — run build→train N times across datasets, aggregate mean/std.
 - `eval_fidelity.py` — insertion/deletion AUC curves.
 - `eval_concept_quality.py` — concept quality metrics.
-- `config.py` — dataset registry & transforms.
+- `config.py` — dataset registry & transforms (CSV paths are anchored to the repo `datasets/` directory).
 - `graph.py` — concept graph dataset loaders/builders.
 - `concepts.py` — NMF utilities using CRAFT.
 - `model.py` — EGAT classifier + Lightning training wrapper.
 - `utils.py` — helpers (e.g., save concept crops).
+- `scripts/sbatch_gradcam.sh`, `scripts/sbatch_train_cnn.sh`, `scripts/sbatch_train_gcbm.sh` — example SLURM jobs (paths may need adjustment for your cluster).
 
 ## Data layout & registry
 
