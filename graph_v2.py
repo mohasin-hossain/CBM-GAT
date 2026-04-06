@@ -157,7 +157,8 @@ def build_and_save_graphs_per_split(images: torch.Tensor,
                                     patch_size: int,
                                     stride_r: float,
                                     ignore_list: Optional[List[int]] = None,
-                                    coverage_threshold: float = 0.0):
+                                    coverage_threshold: float = 0.0,
+                                    **kwargs):
     """
     builds graphs for a single split and saves to out_path using the NMF object.
     """

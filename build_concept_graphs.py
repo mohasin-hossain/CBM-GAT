@@ -24,6 +24,10 @@ def parse_args():
     # sliding window params
     p.add_argument("--patch-size", type=int, default=70)  # your default in examples
     p.add_argument("--stride-r", type=float, default=0.8)
+    # cosine similarity threshold (only used by graph_v4)
+    p.add_argument("--sim-threshold", type=float, default=0.0,
+                   help="Cosine similarity threshold for graph_v4: values below this are zeroed out. "
+                        "Use 0.0 to keep all values (no thresholding).")
     # reuse craft if already fitted
     p.add_argument("--craft-path", default=None, help="If provided, load this craft .dill and skip fitting")
     return p.parse_args()
@@ -116,8 +120,9 @@ def main():
                 out_path=out_file,
                 patch_size=args.patch_size,
                 stride_r=args.stride_r,
-                ignore_list=[], # not used
-                coverage_threshold=0.0, # not used
+                ignore_list=[],
+                coverage_threshold=0.0,
+                sim_threshold=args.sim_threshold,
             )
             print(f"  Saved {n_graphs} graphs to: {out_file}")
 
