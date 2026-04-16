@@ -21,21 +21,24 @@ VARIANTS = {
 
 REGISTRY = {
     "graph": {
-        "v1":   "graph_v1",   # original: CNN features
+        "v1":   "graph_v1",   # original: weighted CNN features, no concept gate
         "v2":   "graph_v2",   # summary statistics
         "v3":   "graph_v3",   # co-occurrence + scalars
         "v4":   "graph_v4",   # cosine similarity (raw, no hand-crafted stats)
-        "v1p2": "graph_v1p2", # NEW: metadata JSON + z_soft/z_onehot concept vectors
+        "v1p2": "graph_v1p2", # NEW (primary): z_c thresholded gate on h^(0) + metadata JSON
+                              #   + z_soft/z_onehot saved in .dgl for concept head ablation
+                              #   PRIMARY fix for reviewer BaF4: concepts now gate node features
     },
     "model": {
-        "v1":   "model_v1",   # original: Accuracy only
+        "v1":   "model_v1",   # original: GAT classifier — use with v1p2 graph for main result
         "v2":   "model_v2",   # Recall + val_bal_acc
-        "v1p1": "model_v1p1", # NEW: GAT + concept head (learnable lambda fusion)
-        "v1p2": "model_v1p2", # NEW: MLP frontend ablation (is GAT necessary?)
+        "v1p1": "model_v1p1", # NEW (ablation probe): GAT + linear concept head + learnable lambda
+                              #   ABLATION only — not the primary model
+        "v1p2": "model_v1p2", # NEW (ablation): MLP frontend replacing GAT — proves GAT is necessary
     },
     "train_model": {
         "v1":   "train_model_v1",   # original: val_loss, no class weights
         "v2":   "train_model_v2",   # val_bal_acc, class weights, per-class metrics
-        "v1p1": "train_model_v1p1", # NEW: dual-head training + 3 eval modes + lambda logging
+        "v1p1": "train_model_v1p1", # NEW: trains model_v1p1 — dual-head, 3 eval modes, lambda log
     },
 }

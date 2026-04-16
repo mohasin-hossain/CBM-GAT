@@ -134,6 +134,32 @@ def _derm7pt_load_split(paths, tdict, split):
     X, Y = _load_one_csv(paths["images_root"], csv_path, tfm)
     return X, Y, None
 
+# ---------- HAM10000 Multiclass (nv=0, mel=1, bkl=2) ----------
+def _ham_mc_build_transforms():
+    return _shared_medical_data_transforms()
+
+def _ham_mc_resolve_paths():
+    base = "/ds-iml/cbm-gat"
+    return {
+        "images_root": os.path.join(base, "ham10000"),
+        "nmf_csv":   os.path.join(default_datasets_dir, "ham10000_multiclass/all_balanced.csv"),
+        "train_csv": os.path.join(default_datasets_dir, "ham10000_multiclass/train_balanced.csv"),
+        "val_csv":   os.path.join(default_datasets_dir, "ham10000_multiclass/validation.csv"),
+        "test_csv":  os.path.join(default_datasets_dir, "ham10000_multiclass/test.csv"),
+    }
+
+def _ham_mc_load_split(paths, tdict, split):
+    if split == "nmf":
+        tfm = tdict["nmf"]
+        csv_path = paths["nmf_csv"]
+    elif split in ("train", "val", "test"):
+        tfm = tdict["eval"]
+        csv_path = paths[f"{split}_csv"]
+    else:
+        raise ValueError(f"Unknown split: {split}")
+    X, Y = _load_one_csv(paths["images_root"], csv_path, tfm)
+    return X, Y, None
+
 # ---------- ImageNet ----------
 def _imagenet_build_transforms():
     
@@ -178,6 +204,7 @@ def _imagenet_load_split(paths, tdict, split):
 DATASETS: Dict[str, DatasetSpec] = {
     "ph2": DatasetSpec("PH2", _ph2_build_transforms, _ph2_resolve_paths, _ph2_load_split),
     "ham10000": DatasetSpec("HAM10000", _ham_build_transforms, _ham_resolve_paths, _ham_load_split),
+    "ham10000_multiclass": DatasetSpec("HAM10000_Multiclass", _ham_mc_build_transforms, _ham_mc_resolve_paths, _ham_mc_load_split),
     "derm7pt": DatasetSpec("Derm7pt", _derm7pt_build_transforms, _derm7pt_resolve_paths, _derm7pt_load_split),
     "imagenet": DatasetSpec("ImageNetSubset", _imagenet_build_transforms, _imagenet_resolve_paths, _imagenet_load_split),
 }
@@ -195,6 +222,11 @@ MODEL_CFG = {
         "batch_size": 64,
     },
     "ham10000": {
+        "num_heads": 6,
+        "hidden_dim": 128,
+        "batch_size": 128,
+    },
+    "ham10000_multiclass": {
         "num_heads": 6,
         "hidden_dim": 128,
         "batch_size": 128,
