@@ -18,8 +18,6 @@ import argparse
 import warnings
 warnings.filterwarnings("ignore")
 
-# CONFIG
-stride_r=0.8
 MODELS = ["mobilenet", "densenet", "resnet50"]
 
 def initialize_model(model_name, device):
@@ -40,18 +38,22 @@ def initialize_model(model_name, device):
     
     return feature_extractor, img_size
 
-def extract_patches(inputs, patch_size=70):
+def extract_patches(inputs, patch_size: int, stride_r: float):
     strides = int(patch_size * stride_r)
+    if strides < 1:
+        raise ValueError(f"stride=int(patch_size*stride_r) must be >= 1; got patch_size={patch_size}, stride_r={stride_r}")
     patches = torch.nn.functional.unfold(inputs, kernel_size=patch_size, stride=strides)
     patches = patches.transpose(1, 2).contiguous().view(-1, 3, patch_size, patch_size)
     return patches
 
-def extract_features(loader, feature_extractor, device, patch_size=80, img_size=224):
+def extract_features(
+    loader, feature_extractor, device, patch_size: int = 80, img_size: int = 224, stride_r: float = 0.8
+):
     features = []
     with torch.no_grad():
         for imgs, _ in loader:
             imgs = imgs.to(device)
-            patches = extract_patches(imgs, patch_size=patch_size)
+            patches = extract_patches(imgs, patch_size=patch_size, stride_r=stride_r)
             patches_resized = torch.nn.functional.interpolate(
                 patches, size=img_size, mode='bilinear', align_corners=False
             )
@@ -184,7 +186,14 @@ def main():
         
         print("extracting features...")
         scaler = StandardScaler()
-        A = extract_features(loader, feature_extractor, device, patch_size=args.patch_size)
+        A = extract_features(
+            loader,
+            feature_extractor,
+            device,
+            patch_size=args.patch_size,
+            img_size=img_size,
+            stride_r=args.stride_r,
+        )
         A = np.maximum(A, 0)
         A_normalized = scaler.fit_transform(A)
 
@@ -193,7 +202,7 @@ def main():
         results['KMeans'] = evaluate_method("KMeans", A, extract_kmeans, scaler, num_concepts=args.num_concepts)
         results['NMF'] = evaluate_method("NMF", A, extract_nmf, scaler, num_concepts=args.num_concepts)
 
-        print("\n\n===== Summary Table for : {model_name} =====")
+        print(f"\n\n===== Summary Table for: {model_name} =====")
         print(f"{'Method':<8} | {'Rel_L2 ↓':>7} | {'Sparsity ↑':>8} | {'Stability ↓':>9} | {'FID ↓':>7} | {'OOD ↓':>7}")
         print("-" * 60)
         for method, (r, s, f, o, st) in results.items():

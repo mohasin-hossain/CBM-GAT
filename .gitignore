@@ -1,3 +1,6 @@
 scripts/
 __pycache__/
 markdowns/
+grid_search_summary_results/
+reference files/
+reference_paper/

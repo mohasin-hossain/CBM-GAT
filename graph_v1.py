@@ -119,6 +119,15 @@ class ConceptGraphDataset(DGLDataset):
                     node_features = []
 
                     for c in valid_nodes:  # Iterate over only valid (not ignored) nodes
+                    # indexing for each concepts max activated patch
+                    # patches_U[:, c] - check on dimension
+                    # argmax of patches_U[:, c], and make it 1
+                    # indexing on patch_activations
+                    # ---------------
+                    # Select patch activation for the concept c based on the max activated patch
+                    # ---------------
+                    # Store the values of patches_U for whole dataset
+                    # Make a plot showing the stats on whole stats
                         node_feature = torch.mean(patch_activations * patches_U[:, c].unsqueeze(-1), dim=0)
                         # node_feature = node_feature / (torch.sum(patches_U[:, i]) + 1)  # avoid division by smaller than 1
                         node_feature = F.gelu(node_feature)
