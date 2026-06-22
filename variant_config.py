@@ -4,13 +4,22 @@ import os
 # Variant selection — driven by environment variables so that each sbatch job
 # carries its own variant without touching this file.
 #
-# Set these env vars in your sbatch script before srun:
-#   export CBM_GRAPH_VARIANT="v1p2"
-#   export CBM_MODEL_VARIANT="v1p1"
-#   export CBM_TRAIN_VARIANT="v1p1"
+# Set these env vars in your sbatch script before srun. v3 defaults shown:
+#   export CBM_GRAPH_VARIANT="v1"
+#   export CBM_MODEL_VARIANT="v1"
+#   export CBM_TRAIN_VARIANT="v1"
+#
+# Set CBM_GRAPH_VARIANT="v1_threshold" if you also want the per-patch
+# sim-threshold gate at build time . Pair it with `--sim-threshold tau`
+# on `build_concept_graphs.py`. `graph_v4` already supports the same
+# knob natively, so there is no separate `v4_threshold` registry entry.
+#
+# Frontend pairing:
+#   FRONTEND=gat    → model v1  + train_model v1    (GAT)
+#   FRONTEND=cb_mlp / cb_linear → concept bottleneck z only (single-node K-dim feat);
+#       graph concept_bottleneck_mlp_linear + model/train concept_bottleneck_{mlp,linear}
 #
 # If the env vars are not set, all three default to "v1" (original behaviour).
-# This file never needs to be edited manually again.
 # ---------------------------------------------------------------------------
 
 VARIANTS = {
@@ -21,24 +30,20 @@ VARIANTS = {
 
 REGISTRY = {
     "graph": {
-        "v1":   "graph_v1",   # original: weighted CNN features, no concept gate
-        "v2":   "graph_v2",   # summary statistics
-        "v3":   "graph_v3",   # co-occurrence + scalars
-        "v4":   "graph_v4",   # cosine similarity (raw, no hand-crafted stats)
-        "v1p2": "graph_v1p2", # NEW (primary): z_c thresholded gate on h^(0) + metadata JSON
-                              #   + z_soft/z_onehot saved in .dgl for concept head ablation
-                              #   PRIMARY fix for reviewer BaF4: concepts now gate node features
+        "v1":           "graph_v1",            # original: weighted CNN features
+        "v4":           "graph_v4",            # cosine similarity (supports sim_threshold)
+        "v1_threshold": "graph_v1_threshold",  # graph_v1 + per-patch sim-threshold gate 
+        # K-dim bottleneck z only (single-node graphs); search token concept_bottleneck_mlp_linear
+        "concept_bottleneck_mlp_linear": "graph_concept_bottleneck_mlp_linear",
     },
     "model": {
-        "v1":   "model_v1",   # original: GAT classifier — use with v1p2 graph for main result
-        "v2":   "model_v2",   # Recall + val_bal_acc
-        "v1p1": "model_v1p1", # NEW (ablation probe): GAT + linear concept head + learnable lambda
-                              #   ABLATION only — not the primary model
-        "v1p2": "model_v1p2", # NEW (ablation): MLP frontend replacing GAT — proves GAT is necessary
+        "v1":   "model_v1",   # GAT classifier — primary model 
+        "concept_bottleneck_mlp": "model_concept_bottleneck_mlp",     # MLP on z (FRONTEND=cb_mlp)
+        "concept_bottleneck_linear": "model_concept_bottleneck_linear",  # linear on z (FRONTEND=cb_linear)
     },
     "train_model": {
-        "v1":   "train_model_v1",   # original: val_loss, no class weights
-        "v2":   "train_model_v2",   # val_bal_acc, class weights, per-class metrics
-        "v1p1": "train_model_v1p1", # NEW: trains model_v1p1 — dual-head, 3 eval modes, lambda log
+        "v1":   "train_model_v1",   # GAT trainer 
+        "concept_bottleneck_mlp": "train_model_concept_bottleneck_mlp",
+        "concept_bottleneck_linear": "train_model_concept_bottleneck_linear",
     },
 }

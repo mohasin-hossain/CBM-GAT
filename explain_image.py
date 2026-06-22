@@ -9,7 +9,7 @@ import matplotlib.patches as patches
 import matplotlib.gridspec as gridspec
 import torch
 import torch.nn.functional as F
-from config import DATASETS, default_output_dir, get_dataset_params   # paths+transforms, defaults
+from config import DATASETS, default_output_dir, get_dataset_params, get_class_label
 from graph import ConceptGraphDataset, load_split, infer_dims          # graph utils (infer dims from saved graphs)
 from concepts import build_model_parts, load_craft_and_attach          # attach Craft's g/h
 from model import EGATClassifier, GAT_LightningModule                  # GAT + Lightning wrapper
@@ -207,7 +207,7 @@ def explain_image(dataset_key: str,
     ax_caption.axis("off")
     ax_caption.text(
         0.5, 0.5,
-        f"Predicted: {pred_idx} ({pred_conf*100:.2f}%)",
+        f"Predicted: {get_class_label(dataset_key, pred_idx)} ({pred_conf*100:.2f}%)",
         ha="center", va="center", fontsize=12
     )
 
@@ -258,7 +258,7 @@ def explain_image(dataset_key: str,
     print(f"[INFO] Figure saved to {out_path}")
 
     # print prediction + important concepts
-    print(f"Predicted label: {pred_idx} ({pred_conf*100:.2f}%)")
+    print(f"Predicted label: {get_class_label(dataset_key, pred_idx)} ({pred_conf*100:.2f}%)")
     print("Important concepts:", ", ".join(str(c) for c in top_concepts))
 
     plt.show()

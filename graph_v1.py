@@ -276,4 +276,4 @@ def load_split(output_root: str, dataset: str, split: str, device: str = "cuda")
 def infer_dims(ds: LoadConceptGraphDataset):
     in_dim = ds.graphs[0].ndata["feat"].shape[1]
     num_classes = int(ds.labels.max().item()) + 1
-    return in_dim, num_classes
+    return in_dim, num_classes, None

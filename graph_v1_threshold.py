@@ -1,37 +1,42 @@
-import torch
-import dgl
-from dgl.data import DGLDataset
-import numpy as np
-from PIL import Image
-import torch.nn.functional as F
-from torchvision import transforms
+"""
+graph_v1_threshold.py — `graph_v1.py` + a per-patch concept activation
+threshold τ.
+
+Companion to `graph_v1.py`. The only behavioural change is a
+`sim_threshold` parameter that zeroes per-patch concept activations
+`patches_U[:, c] < tau` BEFORE the Eq. 5 weighted-sum aggregation
+into the node feature of concept c. With `sim_threshold = 0.0` the
+file is byte-equivalent in behaviour to `graph_v1.py` (no patch is
+masked).
+
+This file is a plain thresholding-aware copy of the published
+`graph_v1.py` and is used by `eval_fidelity_v2.py` and
+`eval_threshold_sweep_v2.py` to study how the graph_v1 prediction
+degrades as weak per-patch concept activations are pruned.
+
+Output `.dgl` artefacts and downstream loader API match
+`graph_v1.py` exactly, so a model trained against `graph_v1` can be
+forwarded against `graph_v1_threshold` graphs without any change.
+"""
+
 import os
+import dgl
+import numpy as np
+import torch
+import torch.nn.functional as F
+from dgl.data import DGLDataset
+from typing import List, Optional
+
 from utils import _safe_argmax
-from typing import Optional, List
 from concepts import build_model_parts, load_craft_and_attach
 
 
 class ConceptGraphDataset(DGLDataset):
-    """
-    Converts images into concept graphs using cosine similarity.
-
-    Each image becomes one graph where:
-      - Nodes = concepts (K nodes, one per NMF concept)
-      - Node features = cosine similarity profile across all patches (P-dim vector)
-      - Edges = fully connected (every concept connected to every other)
-
-    Unlike graph_v1, which builds CNN-weighted node features per concept,
-    this version passes raw cosine similarity values so that the
-    graph network (GAT) can learn its own patterns from the data.
-
-    Key parameter:
-      sim_threshold: cosine similarity values below this are zeroed out.
-                     Set to 0.0 to keep all values (no thresholding).
-    """
+    """Concept graph builder with per-patch activation threshold."""
 
     def __init__(self, images, y, masks, patch_size, craft_xai, ignore_list,
                  device, stride_r=0.8, coverage_threshold=0.5, seed=42,
-                 requires_grad=False, sim_threshold=0.0):
+                 requires_grad=False, sim_threshold: float = 0.0):
         self.images = images
         self.y = y
         self.masks = masks
@@ -43,13 +48,13 @@ class ConceptGraphDataset(DGLDataset):
         self.seed = seed
         self.coverage_threshold = coverage_threshold
         self.requires_grad = requires_grad
-        # cosine similarity threshold: values below this are zeroed out
-        self.sim_threshold = sim_threshold
+        # zero per-patch concept activations strictly below this value
+        # before the Eq. 5 weighted aggregation
+        self.sim_threshold = float(sim_threshold)
 
         super().__init__(name='concept_graph_dataset')
 
     def _batch_inference(self, model, x, resize=None, device='cuda'):
-        """Run a forward pass through the CNN backbone without computing gradients."""
         with torch.no_grad():
             x = x.clone().detach()
             x = x.to(device)
@@ -63,18 +68,16 @@ class ConceptGraphDataset(DGLDataset):
         self.graphs = []
         self.labels = []
 
-        # stride in pixels between adjacent patches
         strides = int(self.patch_size * self.stride_r)
 
-        if self.masks == None:
+        if self.masks is None:
             self.masks = [None] * self.images.shape[0]
 
         for img, y, mask in zip(self.images, self.y, self.masks):
-            img = img.unsqueeze(0)  # add batch dimension: [1, C, H, W]
+            img = img.unsqueeze(0)
             image_size = img.shape[2]
 
-            # --- Step 1: Extract patches from the image ---
-            if mask == None:
+            if mask is None:
                 patches = torch.nn.functional.unfold(
                     img, kernel_size=self.patch_size, stride=strides)
                 patches = patches.transpose(1, 2).contiguous().view(
@@ -85,32 +88,24 @@ class ConceptGraphDataset(DGLDataset):
                     img, kernel_size=self.patch_size, stride=strides)
                 img_patches = img_patches.transpose(1, 2).contiguous().view(
                     -1, 3, self.patch_size, self.patch_size)
-
                 mask_patches = torch.nn.functional.unfold(
                     mask, kernel_size=self.patch_size, stride=strides)
                 mask_patches = mask_patches.transpose(1, 2).contiguous().view(
                     -1, 1, self.patch_size, self.patch_size)
-
-                # only keep patches where enough pixels fall inside the mask
                 coverage = mask_patches.float().mean(dim=(1, 2, 3))
                 keep_indices = coverage >= self.coverage_threshold
                 patches = img_patches[keep_indices]
 
             if patches.shape[0] != 0:
 
-                # --- Step 2: Get CNN features for each patch ---
-                # patch_activations shape: [P, 2048] (P = number of patches)
                 self.craft_xai.device = self.device
                 patch_activations = self._batch_inference(
                     self.craft_xai.input_to_latent, patches,
                     resize=image_size, device=self.device)
 
-                # if CNN output is spatial (4D), average-pool to get [P, 2048]
                 if len(patch_activations.shape) == 4:
                     patch_activations = torch.mean(patch_activations, dim=(2, 3))
 
-                # --- Step 3: NMF transform (still needed for patches_U / patches_C) ---
-                # patches_U shape: [P, K] -- NMF activation of each concept at each patch
                 W_dtype = self.craft_xai.reducer.components_.dtype
                 patches_U = self.craft_xai.reducer.transform(
                     np.array(patch_activations, dtype=W_dtype))
@@ -121,6 +116,13 @@ class ConceptGraphDataset(DGLDataset):
                 patches_U = torch.tensor(
                     patches_U, dtype=torch.float32, device=self.device)
 
+                # NEW vs graph_v1.py: zero out per-patch concept activations
+                # strictly below the threshold so they cannot contribute to
+                # the weighted aggregation below. tau = 0.0 disables this.
+                if self.sim_threshold > 0.0:
+                    patches_U = patches_U * (
+                        patches_U >= self.sim_threshold).float()
+
                 if self.requires_grad:
                     patch_activations = patch_activations.clone().detach().to(
                         torch.float32).to(self.device).requires_grad_()
@@ -129,15 +131,11 @@ class ConceptGraphDataset(DGLDataset):
                     patch_activations = patch_activations.clone().detach().to(
                         torch.float32).to(self.device)
 
-                # which concept indices are we actually using?
                 valid_nodes = [i for i in range(patches_U.shape[1])
                                if i not in self.ignore_list]
                 num_nodes = len(valid_nodes)
 
                 if num_nodes > 1:
-
-                    # --- Step 4: Build fully-connected graph ---
-                    # every concept node is connected to every other concept node
                     src, dst = [], []
                     for i in range(num_nodes):
                         for j in range(num_nodes):
@@ -146,50 +144,24 @@ class ConceptGraphDataset(DGLDataset):
                     graph = dgl.graph(
                         (torch.tensor(src), torch.tensor(dst))).to(self.device)
 
-                    # --- Step 5: Compute cosine similarity node features ---
-                    # W = NMF concept directions, shape [K, 2048]
-                    W = torch.tensor(
-                        self.craft_xai.reducer.components_,
-                        dtype=torch.float32, device=self.device)
-
-                    # normalize patch_activations to unit vectors: [P, 2048]
-                    A_norm = patch_activations / (
-                        patch_activations.norm(dim=1, keepdim=True) + 1e-8)
-
-                    # normalize concept directions to unit vectors: [K, 2048]
-                    W_norm = W / (W.norm(dim=1, keepdim=True) + 1e-8)
-
-                    # cosine similarity between every patch and every concept
-                    # sim_matrix shape: [P, K]
-                    # each entry tells us: how similar is patch p to concept k?
-                    sim_matrix = A_norm @ W_norm.T
-
-                    # apply threshold: zero out weak similarities
-                    if self.sim_threshold > 0:
-                        sim_matrix = sim_matrix * (
-                            sim_matrix > self.sim_threshold).float()
-
-                    # transpose to [K, P]: each concept node gets the full
-                    # similarity profile across all patches as its feature vector
-                    # this is done as a single matrix operation -- no per-concept loop
-                    node_features = sim_matrix.T  # [K, P]
-
-                    # keep only the valid (non-ignored) concept rows
-                    valid_indices = torch.tensor(
-                        valid_nodes, dtype=torch.long, device=self.device)
-                    node_features = node_features[valid_indices]  # [num_nodes, P]
+                    node_features = []
+                    for c in valid_nodes:
+                        node_feature = torch.mean(
+                            patch_activations * patches_U[:, c].unsqueeze(-1),
+                            dim=0)
+                        node_feature = F.gelu(node_feature)
+                        node_features.append(node_feature)
 
                     if self.requires_grad:
-                        graph.ndata['feat'] = node_features.requires_grad_()
+                        graph.ndata['feat'] = torch.stack(
+                            node_features).requires_grad_()
                     else:
-                        graph.ndata['feat'] = node_features
+                        graph.ndata['feat'] = torch.stack(node_features)
 
                     self.graphs.append(graph)
                     self.labels.append(y)
 
     def node_z_score_normalize(self, global_mean=None, global_std=None):
-        """Apply Z-score normalization to node features across all graphs."""
-
         assert hasattr(self, 'graphs') and len(self.graphs) > 0, \
             "No graphs found for normalization."
 
@@ -224,14 +196,12 @@ def build_and_save_graphs_per_split(images: torch.Tensor,
                                     stride_r: float,
                                     ignore_list: Optional[List[int]] = None,
                                     coverage_threshold: float = 0.0,
-                                    sim_threshold: float = 0.0):
-    """
-    Builds concept graphs for one data split and saves them to disk.
-    Uses cosine similarity between patch CNN features and NMF concept
-    directions as node features (no hand-crafted statistics).
-    """
+                                    sim_threshold: float = 0.0,
+                                    **_unused_kwargs):
+    """Drop-in replacement for `graph_v1.build_and_save_graphs_per_split`
+    that honours `sim_threshold`. Extra kwargs are accepted and silently
+    ignored for API parity with `build_concept_graphs.py`."""
     ignore_list = ignore_list or []
-    # rebuild the CNN backbone and attach it to the saved craft object
     g, h = build_model_parts(backbone_name, device=device, pretrained=True)
     craft = load_craft_and_attach(craft_path, g, h)
 
@@ -261,14 +231,13 @@ def build_and_save_graphs_per_split(images: torch.Tensor,
     return out_path, len(graphs)
 
 
-# ---- Loading pre-built graphs from disk ----
+# ---- Loader API matches graph_v1.py exactly ----
 
 class LoadConceptGraphDataset(DGLDataset):
     def __init__(self, file_path=None, efeats=True, device='cuda'):
         self.file_path = file_path
         self.device = device
         self.efeats = efeats
-
         super().__init__(name='concept_graph_dataset')
 
     def load(self):
@@ -283,26 +252,6 @@ class LoadConceptGraphDataset(DGLDataset):
         else:
             self.graphs = []
             self.labels = []
-
-    def node_z_score_normalize(self, global_mean=None, global_std=None):
-        """Apply Z-score normalization to node features across all graphs."""
-
-        assert hasattr(self, 'graphs') and len(self.graphs) > 0, \
-            "No graphs found for normalization."
-
-        if global_mean is None or global_std is None:
-            all_feats = torch.cat(
-                [g.ndata['feat'] for g in self.graphs], dim=0)
-            self.global_mean = all_feats.mean(dim=0)
-            self.global_std = all_feats.std(dim=0) + 1e-8
-        else:
-            self.global_mean = global_mean
-            self.global_std = global_std
-
-        for graph in self.graphs:
-            feats = graph.ndata['feat']
-            feats = (feats - self.global_mean) / self.global_std
-            graph.ndata['feat'] = feats
 
     def __getitem__(self, idx):
         return self.graphs[idx], self.labels[idx]

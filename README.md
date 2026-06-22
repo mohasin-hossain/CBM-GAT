@@ -189,9 +189,10 @@ Datasets and transforms are defined in `config.py`. Adjust paths if your data li
 - **Derm7pt (7pt)**
   - images_root: `/datasets/derm7pt/images`
   - CSVs: `derm7pt_all_balanced.csv`, `derm7pt_train_balanced.csv`, `derm7pt_validation.csv`, `derm7pt_test.csv`
-- **ImageNet subset**
+- **ImageNet subset** (2-class: `n02701002` vs `n04065272`)
   - images_root: `/datasets/imagenet`
   - CSVs: `nmf.csv`, `train.csv`, `val.csv`, `test.csv`
+  - class indices (for captions / `get_class_label`): 0 = Ambulance, 1 = Recreational Vehicle
 
 Please ensure that all downloaded datasets are placed in the designated directory before running the code, and the images_root matches the dataset root.
 

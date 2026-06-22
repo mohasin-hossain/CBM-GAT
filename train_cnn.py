@@ -8,7 +8,11 @@ from torch.utils.data import TensorDataset, DataLoader
 import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
-from torchvision.models import resnet50, ResNet50_Weights
+from torchvision.models import (
+    resnet50,      ResNet50_Weights,
+    densenet201,   DenseNet201_Weights,
+    mobilenet_v2,  MobileNet_V2_Weights,
+)
 
 from config import DATASETS, default_output_dir
 from utils import _set_seed
@@ -78,9 +82,29 @@ def evaluate(model, loader, device: str, num_classes: int):
     return {"acc": acc, "f1": f1, "auc": auc}
 
 
+def build_backbone(backbone: str, num_classes: int) -> nn.Module:
+    """Construct a pretrained backbone with its final classifier replaced."""
+    if backbone == "resnet50":
+        base = resnet50(weights=ResNet50_Weights.DEFAULT)
+        base.fc = nn.Linear(base.fc.in_features, num_classes)
+    elif backbone == "densenet201":
+        base = densenet201(weights=DenseNet201_Weights.DEFAULT)
+        base.classifier = nn.Linear(base.classifier.in_features, num_classes)
+    elif backbone == "mobilenet_v2":
+        base = mobilenet_v2(weights=MobileNet_V2_Weights.DEFAULT)
+        base.classifier[1] = nn.Linear(base.classifier[1].in_features, num_classes)
+    else:
+        raise ValueError(f"Unknown backbone: {backbone!r}. "
+                         f"Choose from resnet50, densenet201, mobilenet_v2.")
+    return base
+
+
 def main():
-    ap = argparse.ArgumentParser("Train CNN baseline (ResNet-50) on images")
-    ap.add_argument("--dataset", required=True, choices=list(DATASETS.keys()))
+    ap = argparse.ArgumentParser("Train CNN baseline on images")
+    ap.add_argument("--dataset",  required=True, choices=list(DATASETS.keys()))
+    ap.add_argument("--backbone", default="resnet50",
+                    choices=["resnet50", "densenet201", "mobilenet_v2"],
+                    help="Backbone architecture (default: resnet50)")
     ap.add_argument("--output-root", type=str, default=default_output_dir)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--batch-size", type=int, default=64)
@@ -123,9 +147,7 @@ def main():
 
     num_classes = int(Y_train.max().item()) + 1
 
-    base = resnet50(weights=ResNet50_Weights.DEFAULT)
-    in_features = base.fc.in_features
-    base.fc = nn.Linear(in_features, num_classes)
+    base = build_backbone(args.backbone, num_classes)
 
     model_dir = os.path.join(args.output_root, args.dataset,
                              "models_cnn", args.dataset)
@@ -143,7 +165,7 @@ def main():
         ckpt_cb = ModelCheckpoint(
             monitor="val_loss",
             dirpath=model_dir,
-            filename=f"{args.dataset}_resnet50_cnn_best",
+            filename=f"{args.dataset}_{args.backbone}_cnn_best",
             mode="min",
             save_weights_only=True,
             save_top_k=1,
@@ -165,7 +187,7 @@ def main():
 
         best_ckpt_path = ckpt_cb.best_model_path
         best_model = ResNetLightning.load_from_checkpoint(
-            best_ckpt_path, model=base)
+            best_ckpt_path, model=build_backbone(args.backbone, num_classes))
 
         if args.save_model:
             print(f"\nBest checkpoint: {best_ckpt_path}")
@@ -177,7 +199,7 @@ def main():
     else:
         best_ckpt_path = args.checkpoint_path
         best_model = ResNetLightning.load_from_checkpoint(
-            best_ckpt_path, model=base)
+            best_ckpt_path, model=build_backbone(args.backbone, num_classes))
 
     cnn = best_model.model.to(device)
 
@@ -185,22 +207,24 @@ def main():
     val_m = evaluate(cnn, val_loader, device, num_classes)
     test_m = evaluate(cnn, test_loader, device, num_classes)
 
-    print("\n=== FINAL CNN BASELINE ===")
+    print(f"\n=== FINAL CNN BASELINE ({args.backbone}) ===")
     print(f"Train: acc={train_m['acc']:.4f}  f1={train_m['f1']:.4f}  auc={train_m['auc']:.4f}")
     print(f"Val:   acc={val_m['acc']:.4f}  f1={val_m['f1']:.4f}  auc={val_m['auc']:.4f}")
     print(f"Test:  acc={test_m['acc']:.4f}  f1={test_m['f1']:.4f}  auc={test_m['auc']:.4f}")
 
-    metrics_path = os.path.join(model_dir, "metrics_cnn.json")
+    metrics_path = os.path.join(model_dir, f"metrics_cnn_{args.backbone}.json")
     with open(metrics_path, "w") as f:
-        json.dump({"train": train_m, "val": val_m, "test": test_m}, f, indent=2)
+        json.dump({"backbone": args.backbone, "train": train_m, "val": val_m, "test": test_m},
+                  f, indent=2)
     print(f"Metrics saved: {metrics_path}")
 
-    state_dict_path = os.path.join(model_dir, f"{args.dataset}_resnet50_cnn.pt")
+    state_dict_path = os.path.join(model_dir, f"{args.dataset}_{args.backbone}_cnn.pt")
     torch.save({
         "state_dict": cnn.state_dict(),
+        "backbone":   args.backbone,
         "num_classes": num_classes,
     }, state_dict_path)
-    print(f"CNN checkpoint saved: {state_dict_path}")
+    print(f"CNN weights saved: {state_dict_path}")
 
 
 if __name__ == "__main__":

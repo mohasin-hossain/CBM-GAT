@@ -26,6 +26,9 @@ class DatasetSpec:
     resolve_paths: Callable[[], Dict[str, str]]
     # load_split takes mode ("nmf"/"train"/"val"/"test") and returns tensors for that specific split
     load_split: Callable[[Dict[str, str], Dict[str, transforms.Compose], str], Tuple[torch.Tensor, torch.Tensor, Optional[List[Any]]]]
+    # Human-readable class names for figures and reports (index = label integer)
+    # Leave empty ([]) to fall back to str(idx) in get_class_label
+    class_names: List[str] = None
 
 
 # custom small transform used in 90° rotation ---
@@ -200,14 +203,91 @@ def _imagenet_load_split(paths, tdict, split):
     X, Y = _load_one_csv(paths["images_root"], csv_path, tfm)
     return X, Y, None
 
+# ---------- CUB-200-2011 ----------
+def _cub_class_names() -> List[str]:
+    path = os.path.join(default_datasets_dir, "cub/class_names.txt")
+    with open(path, encoding="utf-8") as f:
+        names = [line.strip() for line in f if line.strip()]
+    if len(names) != 200:
+        raise RuntimeError(
+            f"Expected 200 CUB class names in {path}, found {len(names)}. "
+            "Run datasets/generate_cub_csvs.py first."
+        )
+    return names
+
+
+def _cub_build_transforms():
+    return _imagenet_build_transforms()
+
+
+def _cub_resolve_paths():
+    base = "/ds-iml/cbm-gat"
+    return {
+        "images_root": os.path.join(
+            base, "CUB_200_2011/CUB_200_2011/CUB_200_2011/images"),
+        "nmf_csv":   os.path.join(default_datasets_dir, "cub/nmf.csv"),
+        "train_csv": os.path.join(default_datasets_dir, "cub/train.csv"),
+        "val_csv":   os.path.join(default_datasets_dir, "cub/validation.csv"),
+        "test_csv":  os.path.join(default_datasets_dir, "cub/test.csv"),
+    }
+
+
+def _cub_load_split(paths, tdict, split):
+    if split == "nmf":
+        tfm = tdict["nmf"]
+        csv_path = paths["nmf_csv"]
+    elif split in ("train", "val", "test"):
+        tfm = tdict["eval"]
+        csv_path = paths[f"{split}_csv"]
+    else:
+        raise ValueError(f"Unknown split: {split}")
+    X, Y = _load_one_csv(paths["images_root"], csv_path, tfm)
+    return X, Y, None
+
 # dataset keys, transformer, and meta-data handler
 DATASETS: Dict[str, DatasetSpec] = {
-    "ph2": DatasetSpec("PH2", _ph2_build_transforms, _ph2_resolve_paths, _ph2_load_split),
-    "ham10000": DatasetSpec("HAM10000", _ham_build_transforms, _ham_resolve_paths, _ham_load_split),
-    "ham10000_multiclass": DatasetSpec("HAM10000_Multiclass", _ham_mc_build_transforms, _ham_mc_resolve_paths, _ham_mc_load_split),
-    "derm7pt": DatasetSpec("Derm7pt", _derm7pt_build_transforms, _derm7pt_resolve_paths, _derm7pt_load_split),
-    "imagenet": DatasetSpec("ImageNetSubset", _imagenet_build_transforms, _imagenet_resolve_paths, _imagenet_load_split),
+    "ph2": DatasetSpec(
+        "PH2", _ph2_build_transforms, _ph2_resolve_paths, _ph2_load_split,
+        class_names=["Common Nevus", "Atypical/Melanoma"],
+    ),
+    "ham10000": DatasetSpec(
+        "HAM10000", _ham_build_transforms, _ham_resolve_paths, _ham_load_split,
+        class_names=["Melanocytic Nevus", "Melanoma"],
+    ),
+    "ham10000_multiclass": DatasetSpec(
+        "HAM10000_Multiclass", _ham_mc_build_transforms, _ham_mc_resolve_paths, _ham_mc_load_split,
+        class_names=["Melanocytic Nevus", "Melanoma", "Benign Keratosis"],
+    ),
+    "derm7pt": DatasetSpec(
+        "Derm7pt", _derm7pt_build_transforms, _derm7pt_resolve_paths, _derm7pt_load_split,
+        class_names=["Benign", "Malignant"],
+    ),
+    "imagenet": DatasetSpec(
+        "ImageNetSubset", _imagenet_build_transforms, _imagenet_resolve_paths, _imagenet_load_split,
+        # Binary subset: n02701002=0, n04065272=1 (see README)
+        class_names=["Ambulance", "Recreational Vehicle"],
+    ),
+    "cub": DatasetSpec(
+        "CUB-200-2011", _cub_build_transforms, _cub_resolve_paths, _cub_load_split,
+        class_names=_cub_class_names(),
+    ),
 }
+
+
+def get_class_label(dataset_key: str, idx: int) -> str:
+    """
+    Return the human-readable class name for a given dataset and integer label.
+    Falls back to str(idx) if:
+      - dataset_key is not in DATASETS
+      - class_names is empty
+      - idx is out of range
+    Usage in figure captions: get_class_label("ham10000", 1) → "Melanoma"
+    ImageNet binary subset: get_class_label("imagenet", 0) → "Ambulance", (1) → "Recreational Vehicle"
+    """
+    spec = DATASETS.get(dataset_key)
+    if spec and spec.class_names and idx < len(spec.class_names):
+        return spec.class_names[idx]
+    return str(idx)
 
 # model configurations
 MODEL_CFG = {
@@ -235,6 +315,11 @@ MODEL_CFG = {
         "num_heads": 6,
         "hidden_dim": 128,
         "batch_size": 128,
+    },
+    "cub": {
+        "num_heads": 6,
+        "hidden_dim": 128,
+        "batch_size": 64,
     },
 }
 

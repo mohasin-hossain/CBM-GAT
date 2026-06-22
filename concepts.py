@@ -15,22 +15,50 @@ def build_model_parts(backbone_name: str = "resnet50",
                       pretrained: bool = True) -> Tuple[nn.Module, nn.Module]:
     """
     Returns (g, h) where:
-      g: input -> last conv feature map (before avgpool/fc)
-      h: feature map -> logits (avg over spatial then fc)
+      g: input -> last conv feature map (before avgpool/fc)  [B, C, H', W']
+      h: feature map -> logits (global avg-pool then fc)
+
+    Supported backbones and their feature dimensions:
+      resnet50      -> 2048-dim spatial features
+      densenet201   -> 1920-dim spatial features
+      mobilenet_v2  -> 1280-dim spatial features
     """
     backbone_name = backbone_name.lower()
     if backbone_name == "resnet50":
         weights = models.ResNet50_Weights.DEFAULT if pretrained else None
         model = models.resnet50(weights=weights)
-
-        conv_until = nn.Sequential(*list(model.children())[:-2])
-        g = conv_until.to(device).eval()
-        h = lambda x: model.head.fc(torch.mean(x, (2, 3))) # penultimate layer to logits
-        # free the original model (we have fc separately)
-        del model
+        g = nn.Sequential(*list(model.children())[:-2]).to(device).eval()
+        # keep fc alive for h; discard the rest
+        fc = model.fc
+        h = lambda x, _fc=fc: _fc(torch.mean(x, (2, 3)))
         return g, h
+
+    elif backbone_name == "densenet201":
+        import torch.nn.functional as _F
+        weights = models.DenseNet201_Weights.DEFAULT if pretrained else None
+        model = models.densenet201(weights=weights)
+        # model.features ends with BatchNorm2d (no ReLU), so activations can be
+        # negative — CRAFT's NMF requires non-negative inputs.  Append ReLU to g
+        # so both g output and h input see the same positive feature map.
+        g = nn.Sequential(model.features, nn.ReLU(inplace=False)).to(device).eval()
+        classifier = model.classifier
+        h = lambda x, _clf=classifier: _clf(x.mean([2, 3]))
+        return g, h
+
+    elif backbone_name == "mobilenet_v2":
+        weights = models.MobileNet_V2_Weights.DEFAULT if pretrained else None
+        model = models.mobilenet_v2(weights=weights)
+        # model.features outputs [B, 1280, H', W']
+        g = model.features.to(device).eval()
+        classifier = model.classifier
+        h = lambda x, _clf=classifier: _clf(x.mean([2, 3]))
+        return g, h
+
     else:
-        raise ValueError(f"Unsupported backbone for Craft: {backbone_name}")
+        raise ValueError(
+            f"Unsupported backbone for Craft: {backbone_name!r}. "
+            "Choose from: resnet50, densenet201, mobilenet_v2"
+        )
 
 # craft fitting and scoring
 def fit_craft_for_k(images: torch.Tensor,

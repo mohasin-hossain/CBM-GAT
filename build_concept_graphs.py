@@ -2,9 +2,10 @@ import os
 import shutil
 import argparse
 import json
+import numpy as np
 import torch
-from graph  import build_and_save_graphs_per_split
-from utils import _save_concepts
+from PIL import Image as PILImage
+from utils import _save_concepts, _reverse_preprocess
 from concepts import build_model_parts, fit_craft_for_k, auto_select_k, save_craft_light, write_best_k
 from config import DATASETS, default_output_dir
 
@@ -24,17 +25,71 @@ def parse_args():
     # sliding window params
     p.add_argument("--patch-size", type=int, default=70)  # your default in examples
     p.add_argument("--stride-r", type=float, default=0.8)
-    # cosine similarity threshold (only used by graph_v4)
+    # per-patch sim threshold (honoured by graph_v4 natively and by graph_v1_threshold)
     p.add_argument("--sim-threshold", type=float, default=0.0,
-                   help="Cosine similarity threshold for graph_v4: values below this are zeroed out. "
-                        "Use 0.0 to keep all values (no thresholding).")
+                   help="Per-patch concept-activation threshold. Values below this are zeroed "
+                        "before node-feature aggregation. Honoured by graph_v4 and "
+                        "graph_v1_threshold; ignored by graph_v1. 0.0 = no thresholding.")
     # reuse craft if already fitted
     p.add_argument("--craft-path", default=None, help="If provided, load this craft .dill and skip fitting")
+    # individual crop saving (needed by Phase H CLIP labelling)
+    p.add_argument("--save-individual-crops", action="store_true",
+                   help="Save top-5 individual patch crops per concept as separate PNGs for CLIP labelling")
+    p.add_argument(
+        "--concept-bottleneck-mlp-linear",
+        action="store_true",
+        help="Use graph_concept_bottleneck_mlp_linear (K-dim z, single-node graphs). "
+             "Sets CBM_GRAPH_VARIANT for this process and writes under "
+             "graphs_concept_bottleneck_mlp_linear/<run_id>/.",
+    )
     return p.parse_args()
+
+
+def save_individual_concept_crops(crops: np.ndarray,
+                                   crops_u: torch.Tensor,
+                                   concept_examples_dir: str,
+                                   top_k: int = 5):
+    """
+    Save top-k individual patch crops per concept as separate PNG files.
+
+    crops:              np.ndarray [num_patches, H, W, C] (float, un-normalised, values 0..1 after reverse-preprocess)
+    crops_u:            torch.Tensor [num_patches, K] — NMF activation scores
+    concept_examples_dir: directory where concept_N.png composites are already saved
+    top_k:              number of individual crops to save per concept
+
+    Saves: concept_{c}_crop_{rank}.png  (rank = 0 is the strongest activating patch)
+    These are used by Phase H (CLIP labelling) for per-crop agreement scoring.
+    """
+    mean = [0.485, 0.456, 0.406]
+    std  = [0.229, 0.224, 0.225]
+
+    crops_u_np = crops_u.numpy() if hasattr(crops_u, 'numpy') else np.array(crops_u)
+    K = crops_u_np.shape[1]
+
+    os.makedirs(concept_examples_dir, exist_ok=True)
+
+    for c in range(K):
+        scores = crops_u_np[:, c]
+        top_indices = scores.argsort()[::-1][:top_k]
+
+        for rank, patch_global_idx in enumerate(top_indices):
+            crop = np.array(crops[patch_global_idx])  # [H, W, C] float
+
+            # Reverse the ImageNet normalisation so the saved PNG looks correct
+            img_arr = _reverse_preprocess(crop, mean, std)  # values in [0, 1]
+            img_arr = (img_arr * 255).clip(0, 255).astype(np.uint8)
+
+            pil_img = PILImage.fromarray(img_arr)
+            save_path = os.path.join(concept_examples_dir, f"concept_{c}_crop_{rank}.png")
+            pil_img.save(save_path)
+
+    print(f"  Saved individual crops ({top_k} per concept, {K} concepts) to: {concept_examples_dir}")
 
 
 def main():
     args = parse_args()
+    if getattr(args, "concept_bottleneck_mlp_linear", False):
+        os.environ["CBM_GRAPH_VARIANT"] = "concept_bottleneck_mlp_linear"
     ds_spec = DATASETS[args.dataset]
 
     tdict = ds_spec.build_transforms()
@@ -90,8 +145,17 @@ def main():
             g=g, h=h)
 
         save_craft_light(craft, default_craft_file)
-        _save_concepts(crops, crops_u, reverse=True, start=0, nb_crops=5, save=True, save_dir = concept_example_save_dir)
+        _save_concepts(crops, crops_u, reverse=True, start=0, nb_crops=5, save=True, save_dir=concept_example_save_dir)
         print(f"Saved Craft (light) to: {default_craft_file}")
+
+        if args.save_individual_crops:
+            save_individual_concept_crops(
+                crops=crops,
+                crops_u=crops_u,
+                concept_examples_dir=concept_example_save_dir,
+                top_k=5,
+            )
+
         craft_path = default_craft_file
     elif craft_path is None:
         if not os.path.isfile(default_craft_file):
@@ -100,7 +164,17 @@ def main():
 
     # Step 2: build graphs per split (reuse the same craft)
     if "build_graphs" in args.steps:
-        graphs_dir = os.path.join(args.output_root, args.dataset, "graphs", run_id)
+        import graph as graph_mod
+
+        build_and_save_graphs_per_split = graph_mod.build_and_save_graphs_per_split
+        if getattr(args, "concept_bottleneck_mlp_linear", False):
+            from graph_concept_bottleneck_mlp_linear import GRAPHS_SUBDIR
+
+            graphs_dir = os.path.join(
+                args.output_root, args.dataset, GRAPHS_SUBDIR, run_id
+            )
+        else:
+            graphs_dir = os.path.join(args.output_root, args.dataset, "graphs", run_id)
         os.makedirs(graphs_dir, exist_ok=True)
 
         for split in ["train", "val", "test"]:
