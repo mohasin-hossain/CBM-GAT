@@ -44,6 +44,7 @@ _DS_DISPLAY = {
     "ph2":      "PH2",
     "derm7pt":  "Derm7pt",
     "imagenet": "ImageNet",
+    "cub":      "CUB-200",
 }
 
 _VARIANT_STYLES = {
@@ -57,6 +58,7 @@ _DS_COLORS = {
     "ph2":      "#c0392b",
     "derm7pt":  "#27ae60",
     "imagenet": "#8e44ad",
+    "cub":      "#e67e22",
 }
 
 

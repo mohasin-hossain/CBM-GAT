@@ -45,6 +45,7 @@ _DS_DISPLAY = {
     "ph2":      "PH2",
     "derm7pt":  "Derm7pt",
     "imagenet": "ImageNet",
+    "cub":      "CUB-200",
 }
 
 _MAX_LABEL_LEN = 22

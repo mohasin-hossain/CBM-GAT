@@ -28,7 +28,7 @@ Improvements over baseline:
     class_distribution, is_discriminative) are propagated verbatim into the output.
 
 Vocabularies — dataset-specific, grounded in established clinical diagnostic criteria:
-  - ham10000 / ham10000_multiclass : ABCDE criteria + HAM10000 paper (Tschandl et al. 2018)
+  - ham10000 : ABCDE criteria + HAM10000 paper (Tschandl et al. 2018)
   - ph2                            : PH2 annotation schema (Mendonça et al. 2013)
   - derm7pt                        : 7-Point Checklist (Kawahara et al. 2019)
   - imagenet                       : 10 general visual terms
@@ -156,13 +156,31 @@ IMAGENET_LABELS = [
     "no dominant visual feature",
 ]
 
+# CUB-200-2011 — short bird visual lexicon (general prompts; not species names)
+CUB_LABELS = [
+    "feather texture and plumage pattern",
+    "beak shape and color",
+    "wing and tail feathers",
+    "eye ring or facial markings",
+    "crown or head coloration",
+    "breast and belly plumage",
+    "leg and foot color",
+    "perching on branch",
+    "foliage or tree background",
+    "sky or open background",
+    "water or wetland background",
+    "fine-grained bird silhouette",
+    # Escape label
+    "no dominant visual feature",
+]
+
 # Vocabulary dispatch — each dataset maps to its own literature-grounded vocabulary
 _VOCAB_MAP = {
     "ham10000":            (HAM10000_LABELS, "ham10000_abcde"),
-    "ham10000_multiclass": (HAM10000_LABELS, "ham10000_abcde"),
     "ph2":                 (PH2_LABELS,      "ph2_annotation_schema"),
     "derm7pt":             (DERM7PT_LABELS,  "derm7pt_7point_checklist"),
     "imagenet":            (IMAGENET_LABELS, "imagenet_visual"),
+    "cub":                 (CUB_LABELS,      "cub_bird_visual"),
 }
 
 # Escape labels — the final entry in each vocabulary list.  When CLIP's argmax
@@ -189,10 +207,10 @@ _PROMPT_TEMPLATES_GENERAL = [
 ]
 _PROMPT_TEMPLATES_MAP = {
     "ham10000":            _PROMPT_TEMPLATES_DERM,
-    "ham10000_multiclass": _PROMPT_TEMPLATES_DERM,
     "ph2":                 _PROMPT_TEMPLATES_DERM,
     "derm7pt":             _PROMPT_TEMPLATES_DERM,
     "imagenet":            _PROMPT_TEMPLATES_GENERAL,
+    "cub":                 _PROMPT_TEMPLATES_GENERAL,
 }
 
 

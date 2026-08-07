@@ -106,7 +106,10 @@ def load_resnet50_finetuned(ckpt_path: str,
     ckpt = torch.load(ckpt_path, map_location=device, weights_only=False)
     num_classes = ckpt["num_classes"]
     backbone = ckpt.get("backbone", "resnet50")
-    if backbone == "resnet50":
+    if backbone == "resnet18":
+        model = models.resnet18(weights=None)
+        model.fc = nn.Linear(model.fc.in_features, num_classes)
+    elif backbone == "resnet50":
         model = models.resnet50(weights=None)
         model.fc = nn.Linear(model.fc.in_features, num_classes)
     elif backbone == "densenet201":
@@ -572,7 +575,9 @@ def gradcam_standalone_medical(dataset_key: str, image_path: str, device: str,
 
 def _get_gradcam_target_layer(model: nn.Module, backbone: str) -> nn.Module:
     """Return the last convolutional block for Grad-CAM given the backbone name."""
-    if backbone == "resnet50":
+    if backbone == "resnet18":
+        return model.layer4
+    elif backbone == "resnet50":
         return model.layer4
     elif backbone == "densenet201":
         return model.features.denseblock4
@@ -651,6 +656,7 @@ def _label_color(label: str) -> str:
 def _fmt_backbone(backbone: str) -> str:
     """Human-readable backbone name: resnet50 -> ResNet-50, etc."""
     mapping = {
+        "resnet18":     "ResNet-18",
         "resnet50":     "ResNet-50",
         "densenet201":  "DenseNet-201",
         "mobilenet_v2": "MobileNet-V2",

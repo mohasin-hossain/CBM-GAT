@@ -137,32 +137,6 @@ def _derm7pt_load_split(paths, tdict, split):
     X, Y = _load_one_csv(paths["images_root"], csv_path, tfm)
     return X, Y, None
 
-# ---------- HAM10000 Multiclass (nv=0, mel=1, bkl=2) ----------
-def _ham_mc_build_transforms():
-    return _shared_medical_data_transforms()
-
-def _ham_mc_resolve_paths():
-    base = "/ds-iml/cbm-gat"
-    return {
-        "images_root": os.path.join(base, "ham10000"),
-        "nmf_csv":   os.path.join(default_datasets_dir, "ham10000_multiclass/all_balanced.csv"),
-        "train_csv": os.path.join(default_datasets_dir, "ham10000_multiclass/train_balanced.csv"),
-        "val_csv":   os.path.join(default_datasets_dir, "ham10000_multiclass/validation.csv"),
-        "test_csv":  os.path.join(default_datasets_dir, "ham10000_multiclass/test.csv"),
-    }
-
-def _ham_mc_load_split(paths, tdict, split):
-    if split == "nmf":
-        tfm = tdict["nmf"]
-        csv_path = paths["nmf_csv"]
-    elif split in ("train", "val", "test"):
-        tfm = tdict["eval"]
-        csv_path = paths[f"{split}_csv"]
-    else:
-        raise ValueError(f"Unknown split: {split}")
-    X, Y = _load_one_csv(paths["images_root"], csv_path, tfm)
-    return X, Y, None
-
 # ---------- ImageNet ----------
 def _imagenet_build_transforms():
     
@@ -254,10 +228,6 @@ DATASETS: Dict[str, DatasetSpec] = {
         "HAM10000", _ham_build_transforms, _ham_resolve_paths, _ham_load_split,
         class_names=["Melanocytic Nevus", "Melanoma"],
     ),
-    "ham10000_multiclass": DatasetSpec(
-        "HAM10000_Multiclass", _ham_mc_build_transforms, _ham_mc_resolve_paths, _ham_mc_load_split,
-        class_names=["Melanocytic Nevus", "Melanoma", "Benign Keratosis"],
-    ),
     "derm7pt": DatasetSpec(
         "Derm7pt", _derm7pt_build_transforms, _derm7pt_resolve_paths, _derm7pt_load_split,
         class_names=["Benign", "Malignant"],
@@ -269,9 +239,26 @@ DATASETS: Dict[str, DatasetSpec] = {
     ),
     "cub": DatasetSpec(
         "CUB-200-2011", _cub_build_transforms, _cub_resolve_paths, _cub_load_split,
-        class_names=_cub_class_names(),
+        class_names=[],  # lazy-loaded; see get_dataset_class_names()
     ),
 }
+
+_cub_class_names_cache: Optional[List[str]] = None
+
+
+def get_dataset_class_names(dataset_key: str) -> List[str]:
+    """Return class names for a dataset, loading CUB names on first access."""
+    global _cub_class_names_cache
+    spec = DATASETS.get(dataset_key)
+    if spec is None:
+        return []
+    if dataset_key == "cub":
+        if not spec.class_names:
+            if _cub_class_names_cache is None:
+                _cub_class_names_cache = _cub_class_names()
+            spec.class_names = _cub_class_names_cache
+        return spec.class_names
+    return spec.class_names or []
 
 
 def get_class_label(dataset_key: str, idx: int) -> str:
@@ -284,9 +271,9 @@ def get_class_label(dataset_key: str, idx: int) -> str:
     Usage in figure captions: get_class_label("ham10000", 1) → "Melanoma"
     ImageNet binary subset: get_class_label("imagenet", 0) → "Ambulance", (1) → "Recreational Vehicle"
     """
-    spec = DATASETS.get(dataset_key)
-    if spec and spec.class_names and idx < len(spec.class_names):
-        return spec.class_names[idx]
+    names = get_dataset_class_names(dataset_key)
+    if names and idx < len(names):
+        return names[idx]
     return str(idx)
 
 # model configurations
@@ -302,11 +289,6 @@ MODEL_CFG = {
         "batch_size": 64,
     },
     "ham10000": {
-        "num_heads": 6,
-        "hidden_dim": 128,
-        "batch_size": 128,
-    },
-    "ham10000_multiclass": {
         "num_heads": 6,
         "hidden_dim": 128,
         "batch_size": 128,

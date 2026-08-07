@@ -44,6 +44,12 @@ def main():
     ap.add_argument("--patience", type=int, default=30)
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--weight-decay", type=float, default=1e-4)
+    ap.add_argument(
+        "--l1-loss-alpha",
+        type=float,
+        default=0.0,
+        help="L1 penalty on GAT hidden activations (0 = off).",
+    )
     ap.add_argument("--hidden-dim", type=int, default=128)
     ap.add_argument("--num-heads", type=int, default=None)
     ap.add_argument("--seed", type=int, default=42)
@@ -97,7 +103,7 @@ def main():
         max_epochs=args.epochs,
         num_classes=num_classes,
         class_weights=None,
-        l1_loss_alpha=0.0,
+        l1_loss_alpha=args.l1_loss_alpha,
     )
 
     # checkpoints / logs dir define

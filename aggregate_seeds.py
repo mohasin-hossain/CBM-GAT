@@ -98,11 +98,12 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 RUNS_ROOT = "/netscratch/mhossain/cbm_gat/runs"
-DATASETS  = ["ham10000", "ph2", "derm7pt", "imagenet"]
+DATASETS  = ["ham10000", "ph2", "derm7pt", "imagenet", "cub"]
 METRICS   = ["auc", "f1", "acc", "balanced_acc"]
 
 # Human-readable display names for backbone identifiers
 BACKBONE_DISPLAY = {
+    "resnet18":     "ResNet-18",
     "resnet50":     "ResNet-50",
     "densenet201":  "DenseNet-201",
     "mobilenet_v2": "MobileNet-V2",
@@ -113,6 +114,7 @@ _DS_DISPLAY = {
     "ph2":      "PH2",
     "derm7pt":  "Derm7pt",
     "imagenet": "ImageNet",
+    "cub":      "CUB-200",
 }
 
 

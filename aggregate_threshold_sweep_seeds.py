@@ -139,7 +139,8 @@ def main() -> None:
                     help="Graph variants to aggregate (default: v1_threshold)")
     ap.add_argument("--datasets", nargs="+",
                     default=["ham10000", "ph2", "derm7pt", "imagenet"],
-                    help="Datasets to aggregate")
+                    help="Datasets to aggregate "
+                         "(e.g. ham10000 ph2 derm7pt imagenet cub)")
     ap.add_argument("--threshold-subdir", default="threshold_sweep",
                     help="Subdirectory inside each seed run's concept_graph_data "
                          "that holds the threshold sweep CSVs "

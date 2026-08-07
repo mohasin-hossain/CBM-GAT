@@ -19,12 +19,26 @@ def build_model_parts(backbone_name: str = "resnet50",
       h: feature map -> logits (global avg-pool then fc)
 
     Supported backbones and their feature dimensions:
+      resnet18      -> 512-dim spatial features (pytorchcv CUB-pretrained; CUB-only)
       resnet50      -> 2048-dim spatial features
       densenet201   -> 1920-dim spatial features
       mobilenet_v2  -> 1280-dim spatial features
     """
     backbone_name = backbone_name.lower()
-    if backbone_name == "resnet50":
+    if backbone_name == "resnet18":
+        from pytorchcv.model_provider import get_model as ptcv_get_model
+
+        ptcv_root = os.path.join(
+            os.environ.get("TORCH_HOME", os.path.expanduser("~/.torch")),
+            "pytorchcv",
+        )
+        net = ptcv_get_model("resnet18_cub", pretrained=pretrained, root=ptcv_root)
+        g = nn.Sequential(*list(net.features.children())[:-1]).to(device).eval()
+        fc = net.output
+        h = lambda x, _fc=fc: _fc(torch.mean(x, (2, 3)))
+        return g, h
+
+    elif backbone_name == "resnet50":
         weights = models.ResNet50_Weights.DEFAULT if pretrained else None
         model = models.resnet50(weights=weights)
         g = nn.Sequential(*list(model.children())[:-2]).to(device).eval()
@@ -57,7 +71,7 @@ def build_model_parts(backbone_name: str = "resnet50",
     else:
         raise ValueError(
             f"Unsupported backbone for Craft: {backbone_name!r}. "
-            "Choose from: resnet50, densenet201, mobilenet_v2"
+            "Choose from: resnet18, resnet50, densenet201, mobilenet_v2"
         )
 
 # craft fitting and scoring

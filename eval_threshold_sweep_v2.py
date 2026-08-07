@@ -82,6 +82,8 @@ def _infer_backbone_from_run_root(run_root: str) -> str:
         return "mobilenet_v2"
     if "bbdensenet201" in rid:
         return "densenet201"
+    if "bbresnet18" in rid:
+        return "resnet18"
     return "resnet50"
 
 
@@ -242,7 +244,7 @@ def main():
                          "has no craft .dill.")
     ap.add_argument(
         "--backbone", default="auto",
-        choices=["auto", "resnet50", "densenet201", "mobilenet_v2"],
+        choices=["auto", "resnet18", "resnet50", "densenet201", "mobilenet_v2"],
         help="CNN encoder for CRAFT patch features — must match the backbone "
              "used when the craft .dill was built. "
              "'auto' infers from the parent run folder name "

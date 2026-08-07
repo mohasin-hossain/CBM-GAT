@@ -9,7 +9,7 @@ Writes to:
     train.csv          — 90% of official train (stratified per class, seed 42)
     validation.csv     — 10% of official train
     test.csv           — official test split (unchanged)
-    nmf.csv            — all official train images (concept discovery)
+    nmf.csv            — train split only (concept discovery; excludes val and test)
     all.csv            — all images with split column
     class_names.txt    — one species name per line, label index = line number
 
@@ -172,7 +172,7 @@ def main() -> None:
         )
 
     train_rows, val_rows = _stratified_train_val(official_train, VAL_RATIO)
-    nmf_rows = official_train[:]
+    nmf_rows = train_rows[:]
     random.shuffle(nmf_rows)
 
     # Sanity: partitions
@@ -183,7 +183,9 @@ def main() -> None:
     assert train_paths.isdisjoint(val_paths)
     assert train_paths.isdisjoint(test_paths)
     assert val_paths.isdisjoint(test_paths)
-    assert nmf_paths == train_paths | val_paths
+    assert nmf_paths == train_paths
+    assert nmf_paths.isdisjoint(val_paths)
+    assert nmf_paths.isdisjoint(test_paths)
 
     print("\nWriting CSVs...")
     _write_csv(os.path.join(OUT_DIR, "train.csv"), train_rows)

@@ -9,6 +9,7 @@ import pytorch_lightning as pl
 from pytorch_lightning.callbacks import ModelCheckpoint, EarlyStopping, LearningRateMonitor
 from sklearn.metrics import accuracy_score, f1_score, roc_auc_score
 from torchvision.models import (
+    resnet18,      ResNet18_Weights,
     resnet50,      ResNet50_Weights,
     densenet201,   DenseNet201_Weights,
     mobilenet_v2,  MobileNet_V2_Weights,
@@ -84,7 +85,10 @@ def evaluate(model, loader, device: str, num_classes: int):
 
 def build_backbone(backbone: str, num_classes: int) -> nn.Module:
     """Construct a pretrained backbone with its final classifier replaced."""
-    if backbone == "resnet50":
+    if backbone == "resnet18":
+        base = resnet18(weights=ResNet18_Weights.DEFAULT)
+        base.fc = nn.Linear(base.fc.in_features, num_classes)
+    elif backbone == "resnet50":
         base = resnet50(weights=ResNet50_Weights.DEFAULT)
         base.fc = nn.Linear(base.fc.in_features, num_classes)
     elif backbone == "densenet201":
@@ -95,7 +99,7 @@ def build_backbone(backbone: str, num_classes: int) -> nn.Module:
         base.classifier[1] = nn.Linear(base.classifier[1].in_features, num_classes)
     else:
         raise ValueError(f"Unknown backbone: {backbone!r}. "
-                         f"Choose from resnet50, densenet201, mobilenet_v2.")
+                         f"Choose from resnet18, resnet50, densenet201, mobilenet_v2.")
     return base
 
 
@@ -103,7 +107,7 @@ def main():
     ap = argparse.ArgumentParser("Train CNN baseline on images")
     ap.add_argument("--dataset",  required=True, choices=list(DATASETS.keys()))
     ap.add_argument("--backbone", default="resnet50",
-                    choices=["resnet50", "densenet201", "mobilenet_v2"],
+                    choices=["resnet18", "resnet50", "densenet201", "mobilenet_v2"],
                     help="Backbone architecture (default: resnet50)")
     ap.add_argument("--output-root", type=str, default=default_output_dir)
     ap.add_argument("--device", default="cuda")

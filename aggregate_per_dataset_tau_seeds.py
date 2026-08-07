@@ -22,10 +22,10 @@ Usage
       --tau-prefix a_run_gv1_threshold_mv1_ps70_sr0.5_gat \\
       --seeds 42 123 456
 
-Concept-bottleneck z (Phase 3, FRONTEND=cb_mlp / cb_linear) uses the same tau table for
-``--backbones resnet50``; example --tau-prefix values:
-  ``a_run_ggcbml_mcbmlp_ps70_sr0.5_cb_mlp`` / ``a_run_ggcbml_mcblin_ps70_sr0.5_cb_linear``
-(omit _tau*_ds*_s* suffixes; see markdowns/TESTING_EXECUTION.md Phase 3).
+Concept-bottleneck z (Phase 3, FRONTEND=cb_mlp / cb_linear) uses the same per-backbone
+τ tables as G-CBM (resnet50 / densenet201 / mobilenet_v2). Example --tau-prefix values:
+  ``a_run_ggcbml_mmcbmlp_ps70_sr0.5_cb_mlp`` / ``a_run_ggcbml_mmcblin_ps70_sr0.5_cb_linear``
+(omit _tau*_bb*_ds*_s* suffixes; see markdowns/TESTING_EXECUTION.md Phase 3a–3b).
 """
 
 from __future__ import annotations
